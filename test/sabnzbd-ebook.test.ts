@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { ChoiceStore } from '../src/choices.js';
 import { loadConfig } from '../src/config.js';
-import { FollowupStore } from '../src/followups.js';
+import {
+  ebookAttemptCeiling,
+  EBOOK_WAIT_BUDGET_MS,
+  FollowupStore,
+  MAX_ATTEMPTS,
+} from '../src/followups.js';
 import { runDueFollowups } from '../src/followup-runner.js';
 import { KindleRegistry } from '../src/kindle.js';
 import { localPathForStorage, readContainedBook } from '../src/media/sab-files.js';
@@ -584,8 +589,147 @@ test('a completed job mails once, says the mail server accepted it, and a restar
   assert.equal(mailed.length, 1, 'reloading the follow-up log must not send a second mail');
 });
 
+test('an ebook check waits about 30s and still budgets about 40 minutes', async () => {
+  assert.equal(ebookAttemptCeiling(30_000) - 1, EBOOK_WAIT_BUDGET_MS / 30_000);
+  const store = new FollowupStore(join(temp(), 'followups.jsonl'));
+  const other = new FollowupStore(join(temp(), 'other.jsonl'));
+  store.schedule({
+    kind: 'ebook-deliver',
+    senderHandle: JEFF,
+    dueAt: new Date(),
+    reason: 'started fetching "Dune.epub" from Usenet for them',
+    observed: 'queued',
+    ebook: { source: 'sab', title: 'Dune.epub', nzoId: NZO },
+  });
+  other.schedule({
+    kind: 'media-add',
+    senderHandle: JEFF,
+    dueAt: new Date(),
+    reason: 'added a show',
+    observed: 'queued',
+    subject: { arr: 'series', id: 1, title: 'Example', seasons: [1] },
+  });
+  const ebookId = store.pendingEbook(JEFF, 'Dune.epub')!.id;
+  const mediaId = other.all()[0]!.id;
+  let ebookDefers = 0;
+  while (store.defer(ebookId, new Date(), 'waiting', new Date(), ebookAttemptCeiling(30_000))) ebookDefers += 1;
+  let mediaDefers = 0;
+  while (other.defer(mediaId, new Date(), 'waiting')) mediaDefers += 1;
+  assert.equal(mediaDefers, MAX_ATTEMPTS - 1);
+  assert.ok(ebookDefers > MAX_ATTEMPTS);
+  assert.equal(ebookDefers * 30_000, EBOOK_WAIT_BUDGET_MS);
+
+  const root = temp();
+  mkdirSync(join(root, 'Dune'));
+  const path = join(temp(), 'pending.jsonl');
+  const first = new FollowupStore(path);
+  const kindle = new KindleRegistry(join(temp(), 'k.jsonl'));
+  kindle.save(JEFF, 'readerone@kindle.com', ['readerone@kindle.com']);
+  const posts: string[] = [];
+  const queued = scripted((mode) => {
+    posts.push(mode);
+    return { queue: { slots: [{ nzo_id: NZO, status: 'Downloading' }] } };
+  }).fetch;
+  await makeSendEbook({
+    send: async () => ({ messageId: 'x' }),
+    sabFetch: async () => {
+      posts.push('addurl');
+      return json({ status: true, nzo_ids: [NZO] });
+    },
+  }).run(
+    { choice: 1 },
+    {
+      ...ctx(),
+      kindle,
+      followups: first,
+      choices: presentUsenet(JEFF),
+      config: withSab(root),
+    },
+  );
+  const scheduled = first.pendingEbook(JEFF, 'Dune.epub');
+  assert.ok(scheduled);
+  assert.equal(scheduled?.ebook?.nzoId, NZO);
+  assert.ok(Date.parse(scheduled!.dueAt) <= Date.now() + 1000);
+
+  const restarted = new FollowupStore(path);
+  const pending = restarted.pendingEbook(JEFF, 'Dune.epub');
+  assert.equal(pending?.ebook?.nzoId, NZO);
+  assert.equal(pending?.attempts, 0);
+  const mailed: unknown[] = [];
+  const t0 = Date.parse(pending!.dueAt);
+  const deps = {
+    config: withSab(root),
+    kindle,
+    now: () => new Date(t0),
+    send: async () => {},
+    mail: async (m: unknown) => {
+      mailed.push(m);
+      return { messageId: 'x' };
+    },
+    sabFetch: queued,
+  };
+  const submitsBeforePoll = posts.filter((mode) => mode === 'addurl').length;
+  const looked = await runDueFollowups(restarted, deps, { kind: 'ebook-deliver' });
+  assert.equal(looked[0]?.action, 'deferred');
+  assert.equal(mailed.length, 0);
+  assert.equal(posts.filter((mode) => mode === 'addurl').length, submitsBeforePoll);
+  const after = restarted.pendingEbook(JEFF, 'Dune.epub');
+  assert.equal(after?.ebook?.nzoId, NZO);
+  assert.equal(after?.attempts, 1);
+  assert.equal(Date.parse(after!.dueAt) - t0, 30_000);
+
+  const again = new FollowupStore(path);
+  assert.equal(again.pendingEbook(JEFF, 'Dune.epub')?.attempts, 1);
+  assert.equal(again.pendingEbook(JEFF, 'Dune.epub')?.ebook?.nzoId, NZO);
+  const early = await runDueFollowups(again, { ...deps, now: () => new Date(t0 + 15_000) }, { kind: 'ebook-deliver' });
+  assert.equal(early.length, 0);
+  assert.equal(mailed.length, 0);
+});
+
+test('a faster ebook pass does not run a media follow-up', async () => {
+  const store = new FollowupStore(join(temp(), 'mix.jsonl'));
+  store.schedule({
+    kind: 'media-add',
+    senderHandle: JEFF,
+    dueAt: new Date(Date.now() - 1000),
+    reason: 'added a show',
+    observed: 'queued',
+    subject: { arr: 'series', id: 7, title: 'Example Show', seasons: [1] },
+  });
+  store.schedule({
+    kind: 'ebook-deliver',
+    senderHandle: JEFF,
+    dueAt: new Date(Date.now() - 1000),
+    reason: 'started fetching "Dune.epub" from Usenet for them',
+    observed: 'queued',
+    ebook: { source: 'sab', title: 'Dune.epub', nzoId: NZO },
+  });
+  const kindle = new KindleRegistry(join(temp(), 'k.jsonl'));
+  kindle.save(JEFF, 'readerone@kindle.com', ['readerone@kindle.com']);
+  await runDueFollowups(
+    store,
+    {
+      config: withSab(temp()),
+      kindle,
+      send: async () => {},
+      mail: async () => ({ messageId: 'x' }),
+      sabFetch: async () => json({ queue: { slots: [{ nzo_id: NZO, status: 'Queued' }] } }),
+    },
+    { kind: 'ebook-deliver' },
+  );
+  assert.equal(store.all().find((f) => f.kind === 'media-add')?.attempts, 0);
+  assert.equal(store.pendingEbook(JEFF, 'Dune.epub')?.attempts, 1);
+});
+
 test('loadConfig reads the SABnzbd variables and does not invent a URL', () => {
-  const keys = ['SABNZBD_URL', 'SABNZBD_API_KEY', 'SABNZBD_CATEGORY', 'SABNZBD_STORAGE_PREFIX', 'SABNZBD_LOCAL_DIR'] as const;
+  const keys = [
+    'SABNZBD_URL',
+    'SABNZBD_API_KEY',
+    'SABNZBD_CATEGORY',
+    'SABNZBD_STORAGE_PREFIX',
+    'SABNZBD_LOCAL_DIR',
+    'EBOOK_RECHECK_MS',
+  ] as const;
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   try {
     delete process.env.SABNZBD_URL;
@@ -600,15 +744,18 @@ test('loadConfig reads the SABnzbd variables and does not invent a URL', () => {
     assert.equal(bare.sabnzbd.category, 'jedd-ebooks');
     assert.equal(bare.sabnzbd.storagePrefix, '');
     assert.equal(bare.sabnzbd.localDir, '');
+    assert.equal(bare.ebookRecheckMs, 30_000);
 
     process.env.SABNZBD_URL = 'http://sab.invalid:8080/';
     process.env.SABNZBD_API_KEY = SAB_KEY;
     process.env.SABNZBD_LOCAL_DIR = '/ebooks';
+    process.env.EBOOK_RECHECK_MS = '45000';
     const set = loadConfig();
     assert.equal(set.sabnzbd.baseUrl, 'http://sab.invalid:8080');
     assert.equal(set.sabnzbd.apiKey, SAB_KEY);
     assert.equal(set.sabnzbd.localDir, '/ebooks');
     assert.equal(set.sabnzbd.storagePrefix, '');
+    assert.equal(set.ebookRecheckMs, 45_000);
   } finally {
     for (const key of keys) {
       const value = saved[key];

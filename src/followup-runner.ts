@@ -1,7 +1,13 @@
 import type { Config } from './config.js';
 import { ArrClient } from './media/arr.js';
 import { deliverEbook } from './media/ebook-deliver.js';
-import type { FollowupStore, Followup } from './followups.js';
+import {
+  ebookAttemptCeiling,
+  MAX_ATTEMPTS,
+  type FollowupKind,
+  type FollowupStore,
+  type Followup,
+} from './followups.js';
 import type { IrcEbooks } from './media/irc-ebooks.js';
 import type { MailSender } from './media/kindle-send.js';
 import type { MailboxReader } from './kindle-mailbox.js';
@@ -42,12 +48,10 @@ export const RETRY_DELAY_MS = 15 * 60 * 1000;
 /** How long between checks on a media add. Downloads take hours, not minutes. */
 export const MEDIA_RECHECK_MS = 60 * 60 * 1000;
 /**
- * How long between attempts at an ebook delivery. Deliberately far shorter than
- * a media add: a book is megabytes, and an IRC bot either answers within its
- * queue or never does. With MAX_ATTEMPTS that gives roughly 40 minutes before it
- * gives up and SAYS so.
+ * Fallback only. The live gap is `config.ebookRecheckMs` (default 30s). The
+ * attempt ceiling grows with that gap so the wait stays about 40 minutes.
+ * Media, throttle, and Kindle-verify follow-ups do not use it.
  */
-export const EBOOK_RECHECK_MS = 10 * 60 * 1000;
 /**
  * How long between attempts when the delivery check cannot prove it can see.
  * Blindness is usually transient (a network blip, an IMAP hiccup), so this
@@ -120,15 +124,21 @@ export interface FollowupOutcome {
  */
 let running = false;
 
-/** Run every follow-up that is due. Never throws — a bad one must not stop the rest. */
+/**
+ * Run every follow-up that is due. Never throws — a bad one must not stop the rest.
+ *
+ * `kind` limits the pass to one kind. The ebook timer uses it so a faster ebook
+ * poll does not also wake media or throttle jobs.
+ */
 export async function runDueFollowups(
   store: FollowupStore,
   deps: FollowupDeps,
+  opts?: { kind?: FollowupKind },
 ): Promise<FollowupOutcome[]> {
   if (running) return [];
   running = true;
   try {
-    return await runDueFollowupsInner(store, deps);
+    return await runDueFollowupsInner(store, deps, opts?.kind);
   } finally {
     running = false;
   }
@@ -142,10 +152,12 @@ export function isFollowupRunInProgress(): boolean {
 async function runDueFollowupsInner(
   store: FollowupStore,
   deps: FollowupDeps,
+  kind?: FollowupKind,
 ): Promise<FollowupOutcome[]> {
   const now = deps.now?.() ?? new Date();
   const outcomes: FollowupOutcome[] = [];
-  for (const followup of store.due(now)) {
+  const due = store.due(now).filter((followup) => !kind || followup.kind === kind);
+  for (const followup of due) {
     try {
       outcomes.push(await runOne(followup, store, deps, now));
     } catch (e) {
@@ -401,8 +413,9 @@ async function deferOrGiveUp(
   giveUpMessage: () => Promise<boolean>,
   /** Defaults to the generic retry gap; ebook deliveries come back sooner. */
   delayMs: number = RETRY_DELAY_MS,
+  maxAttempts: number = MAX_ATTEMPTS,
 ): Promise<FollowupOutcome> {
-  const deferred = store.defer(followup.id, new Date(now.getTime() + delayMs), note, now);
+  const deferred = store.defer(followup.id, new Date(now.getTime() + delayMs), note, now, maxAttempts);
   if (deferred) {
     return { id: followup.id, action: 'deferred', sent: false, detail: note };
   }
@@ -575,12 +588,14 @@ async function runEbookDeliver(
 
   // `waiting` and `unknown` both mean "no verdict yet". Defer, and when the
   // deferrals run out say plainly that we stopped — never just fall silent.
+  const gap = deps.config.ebookRecheckMs;
   return await deferOrGiveUp(followup, store, now, `"${subject.title}": ${r.detail}`, () =>
     speak(
       `${why}\n\nI have stopped waiting for "${subject.title}" — ${r.detail} ` +
         'It has not been sent. Ask me and I will try again.',
     ),
-    EBOOK_RECHECK_MS,
+    gap,
+    ebookAttemptCeiling(gap),
   );
 }
 

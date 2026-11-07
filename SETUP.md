@@ -127,7 +127,9 @@ SABNZBD_LOCAL_DIR=/ebooks
 ```
 
 Usenet copies are not offered, and nothing is queued, until the URL, the API
-key, and both paths are set.
+key, and both paths are set. A pending ebook is checked about every 30 seconds
+(`EBOOK_RECHECK_MS`). Media, throttle, and Kindle-verify follow-ups keep their
+own gaps. The ebook watch still lasts about 40 minutes before it says it stopped.
 
 `SABNZBD_URL` is the SABnzbd server root with no `/api` suffix. This repo does
 not ship a host or a port for it. A finished job is mailed only after history

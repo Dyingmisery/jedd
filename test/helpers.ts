@@ -49,6 +49,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       storagePrefix: '',
       localDir: '',
     },
+    ebookRecheckMs: 30_000,
     prowlarr: { baseUrl: 'http://prowlarr.invalid:9696', apiKey: 'test-key' },
     /**
      * 🔴 `.invalid` FOR THE SAME REASON THE SSH HOSTS ARE. A book test that

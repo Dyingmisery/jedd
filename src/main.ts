@@ -518,30 +518,38 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
+  // 🔴 The follow-up runner sends through the SAME gated connector, so a
+  // rehearsal cannot leak a "here is how that download went" message to
+  // somebody outside the send audience an hour after the window closed.
+  const followupDeps = {
+    config,
+    send: (to: string, text: string) => connector.send(to, text),
+    // An `ebook-deliver` follow-up finishes the job the turn could not: it
+    // needs the same address store and mail sender the tool used, and the IRC
+    // client, because for IRC the REQUEST itself happens out here.
+    kindle,
+    mail: ebook.send,
+    // 🔴 The leg that closes the loop: Amazon reports a refusal by EMAIL,
+    // minutes after the send has already returned a clean 250, so the only
+    // place that evidence exists is the sending account's mailbox. Absent
+    // credentials leave `mailbox` undefined, and the check then reports
+    // `blind` rather than silence — see `runKindleVerify`.
+    ...(mailbox ? { mailbox } : {}),
+    mounts: DEFAULT_MOUNTS,
+    onlySendTo: ebook.onlySendTo,
+    ...(irc ? { irc } : {}),
+  };
   const timer = setInterval(() => {
-    // 🔴 The follow-up runner sends through the SAME gated connector, so a
-    // rehearsal cannot leak a "here is how that download went" message to
-    // somebody outside the send audience an hour after the window closed.
-    void runDueFollowups(followups, {
-      config,
-      send: (to, text) => connector.send(to, text),
-      // An `ebook-deliver` follow-up finishes the job the turn could not: it
-      // needs the same address store and mail sender the tool used, and the IRC
-      // client, because for IRC the REQUEST itself happens out here.
-      kindle,
-      mail: ebook.send,
-      // 🔴 The leg that closes the loop: Amazon reports a refusal by EMAIL,
-      // minutes after the send has already returned a clean 250, so the only
-      // place that evidence exists is the sending account's mailbox. Absent
-      // credentials leave `mailbox` undefined, and the check then reports
-      // `blind` rather than silence — see `runKindleVerify`.
-      ...(mailbox ? { mailbox } : {}),
-      mounts: DEFAULT_MOUNTS,
-      onlySendTo: ebook.onlySendTo,
-      ...(irc ? { irc } : {}),
-    });
+    void runDueFollowups(followups, followupDeps);
   }, TICK_MS);
   timer.unref();
+  // Ebook jobs only. The shared tick above stays at 60s so media, throttle,
+  // and Kindle-verify keep their cadence. The overlap guard in the runner
+  // is what stops the two timers delivering one book twice.
+  const ebookTimer = setInterval(() => {
+    void runDueFollowups(followups, followupDeps, { kind: 'ebook-deliver' });
+  }, config.ebookRecheckMs);
+  ebookTimer.unref();
 
   let turns = 0;
 

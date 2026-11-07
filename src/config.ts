@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { homedir } from 'node:os';
+import { EBOOK_RECHECK_MS_DEFAULT, EBOOK_RECHECK_MS_MAX, EBOOK_RECHECK_MS_MIN } from './followups.js';
 import { join } from 'node:path';
 
 /**
@@ -170,6 +171,12 @@ export interface Config {
     storagePrefix: string;
     localDir: string;
   };
+  /**
+   * How often a pending ebook is checked again. Other follow-ups keep their
+   * own gaps. The attempt ceiling is derived from a fixed wait budget so a
+   * shorter gap does not give up sooner.
+   */
+  ebookRecheckMs: number;
   dispatcharr: {
     baseUrl: string;
     username?: string;
@@ -598,6 +605,10 @@ export function loadConfig(): Config {
       storagePrefix: (process.env.SABNZBD_STORAGE_PREFIX ?? '').trim(),
       localDir: (process.env.SABNZBD_LOCAL_DIR ?? '').trim(),
     },
+    ebookRecheckMs: Math.max(
+      EBOOK_RECHECK_MS_MIN,
+      parsePositiveInt(process.env.EBOOK_RECHECK_MS, EBOOK_RECHECK_MS_DEFAULT, EBOOK_RECHECK_MS_MAX),
+    ),
     dispatcharr: {
       baseUrl: process.env.DISPATCHARR_URL ?? 'http://localhost:9191',
       username: process.env.DISPATCHARR_USER,
