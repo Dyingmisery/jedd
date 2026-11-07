@@ -2,9 +2,10 @@ import { resolveOfKind } from '../choices.js';
 import { deliverEbook } from '../media/ebook-deliver.js';
 import { grabTorrent, type MountMap } from '../media/grab.js';
 import { resolveMagnet, type FetchImpl } from '../media/prowlarr.js';
+import { SabnzbdClient } from '../media/sabnzbd.js';
 import type { IrcEbooks } from '../media/irc-ebooks.js';
 import type { MailSender } from '../media/kindle-send.js';
-import { fail, ok, type Tool, type ToolContext } from './types.js';
+import { fail, ok, type Tool, type ToolContext, type ToolResult } from './types.js';
 
 /**
  * Grab a book and send it to the person's Kindle.
@@ -46,6 +47,8 @@ export interface SendEbookDeps {
   onlySendTo?: string;
   /** Test seam for resolving a magnet from a Prowlarr download link. */
   fetchImpl?: FetchImpl;
+  /** Test seam for the SABnzbd API. Unset in production. */
+  sabFetch?: FetchImpl;
   /** The IRC source, when this deployment has one. */
   irc?: IrcEbooks;
 }
@@ -171,6 +174,13 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
        * a falsy check somewhere below.
        */
       const source = value['source'] === 'irc' ? 'irc' : 'prowlarr';
+      if (source !== 'irc' && value['protocol'] === 'usenet') {
+        const downloadUrl = typeof value['downloadUrl'] === 'string' ? value['downloadUrl'] : '';
+        if (!downloadUrl) {
+          return fail('COULD NOT FETCH — that Usenet release has no NZB link. Nothing was submitted.');
+        }
+        return submitUsenet(ctx, deps, title, downloadUrl);
+      }
 
       /**
        * ⚠️ THE SECOND `.mobi` GUARD THAT USED TO SIT HERE IS GONE, NOT MOVED BY
@@ -301,6 +311,62 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
       );
     },
   };
+}
+
+/**
+ * Queue one NZB and record its job id. Mail happens later, from the follow-up,
+ * so this turn cannot also send the file.
+ */
+async function submitUsenet(
+  ctx: ToolContext,
+  deps: SendEbookDeps,
+  title: string,
+  downloadUrl: string,
+): Promise<ToolResult> {
+  const sab = ctx.config.sabnzbd;
+  if (!sab.baseUrl || !sab.apiKey) {
+    return fail('SABnzbd is not configured (SABNZBD_URL and SABNZBD_API_KEY). Nothing was submitted.');
+  }
+  if (!sab.storagePrefix || !sab.localDir) {
+    return fail(
+      'SABnzbd paths are not configured (SABNZBD_STORAGE_PREFIX and SABNZBD_LOCAL_DIR). Nothing was submitted.',
+    );
+  }
+  if (!ctx.followups) {
+    return fail(
+      'There is nowhere to record the SABnzbd job, so it was NOT submitted. Nothing was sent.',
+    );
+  }
+  const pending = ctx.followups.pendingEbook(ctx.senderHandle, title);
+  if (pending) {
+    return ok(
+      `STARTED — "${title}" is already being fetched. NOTHING HAS BEEN SENT YET. Do not start a second copy. ` +
+        'Tell them you will message them when the mail server has actually accepted the file — do not say it ' +
+        'has been sent, and do not say it is on their Kindle.',
+    );
+  }
+  const added = await new SabnzbdClient({
+    baseUrl: sab.baseUrl,
+    apiKey: sab.apiKey,
+    category: sab.category,
+    ...(deps.sabFetch ? { fetchImpl: deps.sabFetch } : {}),
+  }).addUrl(downloadUrl);
+  if (added.state !== 'accepted') {
+    return fail(`FAILED — ${added.detail} Nothing was sent.`);
+  }
+  ctx.followups.schedule({
+    kind: 'ebook-deliver',
+    senderHandle: ctx.senderHandle,
+    dueAt: new Date(),
+    reason: `started fetching "${title}" from Usenet for them`,
+    observed: `SABnzbd accepted the NZB as job ${added.nzoId}. Nothing has been mailed.`,
+    ebook: { source: 'sab', title, nzoId: added.nzoId },
+  });
+  return ok(
+    `STARTED — SABnzbd accepted "${title}" in category ${sab.category}. NOTHING HAS BEEN SENT YET. ` +
+      'The download has not finished. Tell them it is queued and that you will message them when the ' +
+      'mail server has actually accepted the file — do not say it has been sent, and do not say it is on their Kindle.',
+  );
 }
 
 /** Amazon has rejected `.mobi` since 2022, and does it silently. */

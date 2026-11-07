@@ -93,6 +93,7 @@ that row and nothing else.
 | `HP_ADMIN_SSH_HOST` | **12 tools**: docker ps/inspect/logs, restart a container, restart the *arr stack, diagnose host contention, live-TV checks |
 | `HP_SHELL_SSH_HOST` | `hp_shell` — free-form read-only shell. See the security note below. |
 | `KINDLE_SMTP_*` | **4 tools**: find an ebook and send it to a Kindle, plus address intake |
+| `SABNZBD_URL` + `SABNZBD_API_KEY` + `SABNZBD_STORAGE_PREFIX` + `SABNZBD_LOCAL_DIR` | Usenet ebooks: queue an NZB in SABnzbd and mail it when the job completes. Torrent and IRC ebooks work without this |
 | `JFAGO_URL` + `JFAGO_PASSWORD` | Invite someone to your Jellyfin |
 | `DISPATCHARR_URL` | Live-TV channel health |
 | `IRC_EBOOKS=1` | A second ebook source besides Prowlarr |
@@ -100,6 +101,40 @@ that row and nothing else.
 
 Full descriptions of every variable are in **`.env.example`**, which is the
 complete reference — every variable the code reads is documented there.
+
+### Usenet ebooks (SABnzbd)
+
+Torrent grabs still go to qBittorrent over SSH (`EBOOK_HOST_DOWNLOAD_PREFIX`).
+IRC grabs are unchanged. Usenet is a third fetcher. It runs only when the
+SABnzbd URL, API key, storage prefix, and local directory are all set.
+
+Create a SABnzbd category named `jedd-ebooks` (or whatever `SABNZBD_CATEGORY`
+is) with its own folder, not the incomplete directory and not another app's
+category. `SABNZBD_STORAGE_PREFIX` is that folder as SABnzbd reports it in
+history `storage`. There is no default path.
+
+Jedd does not read the download over SSH. Bind-mount only that category
+directory read-only, and set `SABNZBD_LOCAL_DIR` to the path inside Jedd.
+Example, not a deployed layout:
+
+```yaml
+- /srv/downloads/ebooks:/ebooks:ro
+```
+
+```
+SABNZBD_STORAGE_PREFIX=/library/ebooks
+SABNZBD_LOCAL_DIR=/ebooks
+```
+
+Usenet copies are not offered, and nothing is queued, until the URL, the API
+key, and both paths are set.
+
+`SABNZBD_URL` is the SABnzbd server root with no `/api` suffix. This repo does
+not ship a host or a port for it. A finished job is mailed only after history
+says `Completed` and includes a storage path, the file is an EPUB, PDF, or
+AZW3 inside that mount, and the existing validator accepts the bytes. The
+iMessage says the mail server accepted the file. It does not say the Kindle
+device has it. Amazon refusals still come back through the existing IMAP check.
 
 ### 🔴 If you set the two SSH variables, make them different accounts
 

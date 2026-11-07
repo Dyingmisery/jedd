@@ -512,6 +512,7 @@ test('🔴 every candidate dead is ALL DEAD, which is not "nothing was found"', 
 test('the prowlarr rankers lead on the band, not on the label', () => {
   const mk = (title: string, seeders: number): Release => ({
     title,
+    protocol: 'torrent',
     infoHash: HASH_A,
     seeders,
     sizeBytes: 1,

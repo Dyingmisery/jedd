@@ -7,6 +7,8 @@ import { fetchFileFromHp, resolveBookPath } from './fetch-file.js';
 import { grabStatus, toHostPath, type MountMap } from './grab.js';
 import type { IrcEbooks } from './irc-ebooks.js';
 import { sendToKindle, type MailSender } from './kindle-send.js';
+import { readContainedBook } from './sab-files.js';
+import { SabnzbdClient, type FetchImpl } from './sabnzbd.js';
 
 /**
  * The last leg of an ebook, shared by BOTH sources and by both callers.
@@ -59,6 +61,8 @@ export interface DeliverDeps {
   followups?: FollowupScheduler;
   exec?: ExecImpl;
   irc?: IrcEbooks;
+  /** Test seam for SABnzbd. Unset in production. */
+  sabFetch?: FetchImpl;
   mounts?: MountMap[];
   /**
    * 🔴 THE LIVE-TEST RESTRICTION LIVES HERE, NOT ONLY IN THE TOOL.
@@ -109,7 +113,9 @@ export async function deliverEbook(
   const got =
     subject.source === 'irc'
       ? await fetchViaIrc(subject, deps, opts.mayBlock)
-      : await fetchViaTorrent(subject, deps);
+      : subject.source === 'sab'
+        ? await fetchViaSab(subject, deps)
+        : await fetchViaTorrent(subject, deps);
   if (got.state !== 'ok') return got;
 
   // ── identify the bytes before anything else touches them ──────────────────
@@ -262,6 +268,38 @@ async function fetchViaIrc(subject: EbookDeliverSubject, deps: DeliverDeps, mayB
   // `failed` from the client is terminal (bot absent, never answered, truncated,
   // passive DCC). `unknown` means we could not even establish that much.
   return r.state === 'failed' ? { state: 'failed', detail: r.detail } : { state: 'unknown', detail: r.detail };
+}
+
+/** SABnzbd: poll the stored job id, then read the file off the local mount. */
+async function fetchViaSab(subject: EbookDeliverSubject, deps: DeliverDeps): Promise<Got> {
+  if (!subject.nzoId) {
+    return {
+      state: 'failed',
+      detail: 'that pick did not carry a SABnzbd job id, so it cannot be fetched. Nothing was resubmitted.',
+    };
+  }
+  const sab = deps.config.sabnzbd;
+  const job = await new SabnzbdClient({
+    baseUrl: sab.baseUrl,
+    apiKey: sab.apiKey,
+    category: sab.category,
+    ...(deps.sabFetch ? { fetchImpl: deps.sabFetch } : {}),
+  }).job(subject.nzoId);
+  if (job.state === 'queued' || job.state === 'missing' || job.state === 'incomplete') {
+    return { state: 'waiting', detail: job.state === 'queued' ? `SABnzbd still has the job (${job.status}). Nothing has been mailed.` : job.detail };
+  }
+  if (job.state === 'unknown') return { state: 'unknown', detail: job.detail };
+  if (job.state === 'failed') return { state: 'failed', detail: `${job.detail} Nothing was sent.` };
+
+  const book = await readContainedBook({
+    storage: job.storage,
+    storagePrefix: sab.storagePrefix,
+    localDir: sab.localDir,
+  });
+  if (book.state === 'ok') return { state: 'ok', filename: book.filename, bytes: book.bytes };
+  if (book.state === 'absent') return { state: 'waiting', detail: book.detail };
+  if (book.state === 'rejected') return { state: 'failed', detail: `${book.detail} Nothing was sent.` };
+  return { state: 'unknown', detail: book.detail };
 }
 
 /** Prowlarr/qBittorrent: is it on disk yet, and if so read it off hp. */

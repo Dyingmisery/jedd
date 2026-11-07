@@ -155,6 +155,21 @@ export interface Config {
     fromEmail: string;
     smtpPassword: string;
   };
+  /**
+   * SABnzbd, for Usenet ebooks only. Empty `baseUrl` or `apiKey` means Usenet
+   * results are reported and not fetched. Torrent and IRC grabs do not read this.
+   *
+   * `storagePrefix` is the path SABnzbd writes into history `storage`.
+   * `localDir` is that same folder as this process sees it, via a read-only
+   * bind. Both are empty until set. There is no default directory.
+   */
+  sabnzbd: {
+    baseUrl: string;
+    apiKey: string;
+    category: string;
+    storagePrefix: string;
+    localDir: string;
+  };
   dispatcharr: {
     baseUrl: string;
     username?: string;
@@ -574,6 +589,14 @@ export function loadConfig(): Config {
       // would have changed nothing. An empty value is refused by send_ebook.
       fromEmail: process.env.KINDLE_FROM_EMAIL ?? '',
       smtpPassword: process.env.KINDLE_SMTP_PASSWORD ?? '',
+    },
+    sabnzbd: {
+      // No default URL. A guessed host would look configured and is not.
+      baseUrl: (process.env.SABNZBD_URL ?? '').trim().replace(/\/+$/, ''),
+      apiKey: (process.env.SABNZBD_API_KEY ?? '').trim(),
+      category: (process.env.SABNZBD_CATEGORY ?? 'jedd-ebooks').trim() || 'jedd-ebooks',
+      storagePrefix: (process.env.SABNZBD_STORAGE_PREFIX ?? '').trim(),
+      localDir: (process.env.SABNZBD_LOCAL_DIR ?? '').trim(),
     },
     dispatcharr: {
       baseUrl: process.env.DISPATCHARR_URL ?? 'http://localhost:9191',

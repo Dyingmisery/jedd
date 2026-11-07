@@ -41,6 +41,14 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     // ceiling is a test nobody writes.
     images: { maxWidth: 1024, maxBytes: 1000, maxCount: 3, historyTurns: 2 },
     kindle: { smtpHost: 'smtp.invalid', smtpPort: 587, fromEmail: 'jedd@invalid', smtpPassword: 'test-pw' },
+    // Disabled unless a test sets a URL and key. Usenet rows are then held, not fetched.
+    sabnzbd: {
+      baseUrl: '',
+      apiKey: '',
+      category: 'jedd-ebooks',
+      storagePrefix: '',
+      localDir: '',
+    },
     prowlarr: { baseUrl: 'http://prowlarr.invalid:9696', apiKey: 'test-key' },
     /**
      * 🔴 `.invalid` FOR THE SAME REASON THE SSH HOSTS ARE. A book test that

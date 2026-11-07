@@ -44,8 +44,28 @@ export interface ProwlarrOptions {
 /** Prowlarr newznab category ids. */
 export const CATEGORY = { ebook: 7020, audiobook: 3030 } as const;
 
+export type ReleaseProtocol = 'torrent' | 'usenet';
+
+/**
+ * Prowlarr's `protocol` field. Absent means torrent.
+ *
+ * A Usenet row often has no `seeders` key at all. Treating that absence as a
+ * torrent swarm is what made every NZB look dead. Only an explicit usenet (or
+ * nzb) protocol takes the Usenet path; everything else stays a torrent so a
+ * real zero-seeder torrent is still excluded.
+ */
+export function releaseProtocol(raw: unknown): ReleaseProtocol {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return s === 'usenet' || s === 'nzb' ? 'usenet' : 'torrent';
+}
+
 export interface Release {
   title: string;
+  /**
+   * `usenet` rows are fetched as NZBs. They are not a swarm, and `seeders` on
+   * them is not a health signal.
+   */
+  protocol: ReleaseProtocol;
   /**
    * 40 hex characters — or **the empty string**, meaning it must be RESOLVED
    * from `downloadUrl` before this release can be grabbed. See `resolveMagnet`.
@@ -284,13 +304,21 @@ export class ProwlarrClient {
        */
       const infoHash = isValidInfoHash(r['infoHash']) ? r['infoHash'] : '';
       const downloadUrl = typeof r['downloadUrl'] === 'string' ? r['downloadUrl'] : '';
-      if (!infoHash && !downloadUrl) {
+      const protocol = releaseProtocol(r['protocol']);
+      /**
+       * A Usenet row is fetchable only as an NZB. An infoHash does not give
+       * SABnzbd anything to download, so a usenet row with no link is discarded
+       * the same way an unfetchable torrent is.
+       */
+      const unfetchable = protocol === 'usenet' ? !downloadUrl : !infoHash && !downloadUrl;
+      if (unfetchable) {
         discarded += 1;
         continue;
       }
       const guid = typeof r['guid'] === 'string' ? r['guid'] : '';
       releases.push({
         title: String(r['title'] ?? ''),
+        protocol,
         infoHash,
         ...(downloadUrl ? { downloadUrl } : {}),
         ...(guid.startsWith('magnet:') ? { magnetUri: guid } : {}),

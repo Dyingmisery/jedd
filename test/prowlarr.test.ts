@@ -139,7 +139,7 @@ test('🔴 exactly ONE request is made — no retry loop', async () => {
 
 test('alive releases outrank dead ones, then by seeders', () => {
   const mk = (title: string, seeders: number) => ({
-    title, seeders, infoHash: HASH, sizeBytes: 1, indexer: 'i',
+    title, protocol: 'torrent' as const, seeders, infoHash: HASH, sizeBytes: 1, indexer: 'i',
   });
   const ranked = rankReleases([mk('dead', 0), mk('few', 3), mk('many', 40)]);
   assert.deepEqual(ranked.map((r) => r.title), ['many', 'few', 'dead']);
@@ -149,7 +149,9 @@ test('alive releases outrank dead ones, then by seeders', () => {
 
 import { classifyAudiobook, rankAudiobooks } from '../src/media/prowlarr.js';
 
-const ab = (title: string, seeders = 10) => ({ title, seeders, infoHash: HASH, sizeBytes: 1, indexer: 'i' });
+const ab = (title: string, seeders = 10) => ({
+  title, protocol: 'torrent' as const, seeders, infoHash: HASH, sizeBytes: 1, indexer: 'i',
+});
 
 test('🔴 "unabridged" is NOT classified as abridged — it contains the word', () => {
   // The \bn't\b trap in a new costume, and worse: a substring rather than a

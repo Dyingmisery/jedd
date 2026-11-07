@@ -7,6 +7,7 @@ import type { MailSender } from './media/kindle-send.js';
 import type { MailboxReader } from './kindle-mailbox.js';
 import { verifyKindleDelivery } from './kindle-verify.js';
 import type { MountMap } from './media/grab.js';
+import type { FetchImpl } from './media/sabnzbd.js';
 import type { KindleRegistry } from './kindle.js';
 import { jellyfinGet, type JellyfinResponse } from './jellyfin.js';
 import type { ExecImpl } from './hp.js';
@@ -70,6 +71,8 @@ export interface FollowupDeps {
   mail?: MailSender;
   irc?: IrcEbooks;
   mounts?: MountMap[];
+  /** Test seam for SABnzbd. Unset in production. */
+  sabFetch?: FetchImpl;
   /** Same live-test restriction the tool carries; see `DeliverDeps`. */
   onlySendTo?: string;
   exec?: ExecImpl;
@@ -547,6 +550,7 @@ async function runEbookDeliver(
       ...(deps.exec ? { exec: deps.exec } : {}),
       ...(deps.irc ? { irc: deps.irc } : {}),
       ...(deps.mounts ? { mounts: deps.mounts } : {}),
+      ...(deps.sabFetch ? { sabFetch: deps.sabFetch } : {}),
       followups: store,
       ...(deps.onlySendTo ? { onlySendTo: deps.onlySendTo } : {}),
     },

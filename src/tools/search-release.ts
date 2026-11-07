@@ -120,7 +120,9 @@ function makeReleaseSearch(
         'they mean first, then CHOOSES the best release itself; do NOT list releases and do NOT ask ' +
         `which torrent they want. Then call ${consumer}. If it comes back asking WHICH BOOK, show ` +
         'them those books and call this again with the same query and their number as `choice`. Do ' +
-        'NOT say anything is being sent yet. Use search_audiobook instead if they want to LISTEN.',
+        'NOT say anything is being sent yet. A Usenet release has no seeder count; that is normal ' +
+        'and is NOT a dead swarm — do not tell them it is unseeded. Use search_audiobook instead ' +
+        'if they want to LISTEN.',
     minRole: 'guest',
     /**
      * ⚠️ A READ. It searches indexers and stores a list; nothing is grabbed and
@@ -508,6 +510,7 @@ function makeReleaseSearch(
               wantsGraphic,
               work,
               searched: false,
+              takeUsenet: false,
             }),
           );
           break;
@@ -516,7 +519,13 @@ function makeReleaseSearch(
           rung.term,
           isAudio ? CATEGORY.audiobook : CATEGORY.ebook,
         );
-        const attempt = evaluate(rung, result, { isAudio, wantsGraphic, work, searched: true });
+        const attempt = evaluate(rung, result, {
+          isAudio,
+          wantsGraphic,
+          work,
+          searched: true,
+          takeUsenet: sabAcceptsUsenet(ctx.config, isAudio),
+        });
         attempts.push(attempt);
         if (attempt.candidates.length > 0) break;
         if (result.state === 'unknown') break;
@@ -686,7 +695,7 @@ function makeReleaseSearch(
         let resolvedTop: Offer | undefined;
         for (const offer of top.slice(0, MAX_RESOLVE_ATTEMPTS)) {
           const v = offer.value;
-          if (v['source'] !== 'prowlarr' || isValidInfoHash(v['infoHash'])) {
+          if (v['protocol'] === 'usenet' || v['source'] !== 'prowlarr' || isValidInfoHash(v['infoHash'])) {
             resolvedTop = offer;
             break;
           }
@@ -725,6 +734,18 @@ function makeReleaseSearch(
        * identity filter emptied the list.
        */
       if (merged.length === 0) {
+        if (best.usenetSkipped > 0) {
+          const why = isAudio
+            ? 'Audiobook downloads are torrents, so a Usenet NZB was not offered to qBittorrent.'
+            : 'SABnzbd is not fully configured (SABNZBD_URL, SABNZBD_API_KEY, SABNZBD_STORAGE_PREFIX, and SABNZBD_LOCAL_DIR), so those copies were not offered.';
+          return ok(
+            `USENET HELD — found ${best.usenetSkipped} Usenet release(s) for "${query}" (searched ` +
+              `${tried}). ${why}` +
+              (best.deadCount ? ` ${best.deadCount} torrent release(s) had NO seeders and were left out.` : '') +
+              ' Nothing was chosen. Do NOT say the Usenet copies have no seeders, and do NOT say the ' +
+              'book does not exist.',
+          );
+        }
         return ok(
           `ALL DEAD — found ${releases.length} ${medium} release(s) for "${query}" (searched ` +
             `${tried}) and every one has NO seeders, so none of them would ever finish. Nothing was ` +
@@ -783,6 +804,13 @@ function makeReleaseSearch(
         notes.push(`${found.discarded} more had no infoHash or download link and cannot be fetched`);
       }
       if (wrongWork.length) notes.push(`${wrongWork.length} that are not that book left out`);
+      if (best.usenetSkipped) {
+        notes.push(
+          `${best.usenetSkipped} Usenet release(s) left out (${
+            isAudio ? 'audiobooks are grabbed as torrents' : 'SABnzbd is not configured'
+          })`,
+        );
+      }
       /**
        * 🔴 A RESULT THAT ONLY A BROADER FORM FOUND SAYS SO. The first form
        * finding nothing is exactly the state that used to be reported as "no
@@ -851,9 +879,13 @@ function makeReleaseSearch(
         // Named apart from the `best` ATTEMPT above: that one is a query form,
         // this one is a release.
         const bestOffer = top[0]!;
+        const choiceLine =
+          bestOffer.value['protocol'] === 'usenet'
+            ? `the indexer listed a Usenet copy and I took that. Being listed is not a finished download and not a promise it will complete: ${bestOffer.label}`
+            : `I took the healthiest swarm myself: ${bestOffer.label}`;
         return ok(
           `CHOSE — "${describeWork(work)}" is the book, and among the ${top.length} release(s) that ` +
-            `are copies of it I took the healthiest swarm myself: ${bestOffer.label}${suffix}.\n` +
+            `are copies of it ${choiceLine}${suffix}.\n` +
             'Do NOT list releases and do NOT ask which torrent they want — that choice is already ' +
             `made and it is not theirs. Call ${consumer} now with choice 1. Nothing is ` +
             `${isAudio ? 'downloading' : 'being sent'} yet.`,
@@ -908,7 +940,24 @@ function isGraphicAudio(r: Release): boolean {
 }
 
 function describe(r: Release): string {
-  return `${r.title} — ${humanSize(r.sizeBytes)}, ${describeSwarm(r.seeders)}, ${r.indexer}`;
+  const how =
+    r.protocol === 'usenet'
+      ? 'Usenet (listed by the indexer; download success is not guaranteed)'
+      : describeSwarm(r.seeders);
+  return `${r.title} — ${humanSize(r.sizeBytes)}, ${how}, ${r.indexer}`;
+}
+
+/**
+ * Usenet ebooks are fetched only when SABnzbd can accept a job AND this
+ * process can read the finished folder. Audiobooks stay torrents.
+ */
+function sabAcceptsUsenet(
+  config: { sabnzbd: { baseUrl: string; apiKey: string; storagePrefix: string; localDir: string } },
+  isAudio: boolean,
+): boolean {
+  if (isAudio) return false;
+  const sab = config.sabnzbd;
+  return Boolean(sab.baseUrl.trim() && sab.apiKey.trim() && sab.storagePrefix.trim() && sab.localDir.trim());
 }
 
 function humanSize(bytes: number): string {
@@ -938,6 +987,8 @@ interface Attempt {
   /** After the GraphicAudio preference — the population the notes count from. */
   releases: Release[];
   deadCount: number;
+  /** Usenet rows left out of the offer list. They are not a dead swarm. */
+  usenetSkipped: number;
   /** Ranked, identity-scored, dead swarms removed. Wrong works still included. */
   offers: Offer[];
   /**
@@ -958,7 +1009,7 @@ interface Attempt {
 function evaluate(
   rung: SearchTerm,
   found: SearchResult,
-  o: { isAudio: boolean; wantsGraphic: boolean; work?: Work; searched: boolean },
+  o: { isAudio: boolean; wantsGraphic: boolean; work?: Work; searched: boolean; takeUsenet: boolean },
 ): Attempt {
   const all = found.state === 'results' ? found.releases : [];
   const releases = o.isAudio ? all.filter((r) => isGraphicAudio(r) === o.wantsGraphic) : all;
@@ -972,7 +1023,17 @@ function evaluate(
    * nothing" and "found only things that will never finish" are different
    * answers. IRC offers are unaffected: a DCC transfer has no swarm to be dead.
    */
-  const alive = releases.filter((r) => swarmHealth(r.seeders) !== 'dead');
+  /**
+   * A missing or zero seeder count kills a TORRENT. It does not kill a Usenet
+   * row: NZBs do not have seeders. Usenet is still withheld when this deploy
+   * cannot fetch it, and that withholding is counted separately from the dead
+   * swarm so the two are not reported as the same fact.
+   */
+  const torrents = releases.filter((r) => r.protocol !== 'usenet');
+  const usenet = releases.filter((r) => r.protocol === 'usenet');
+  const alive = torrents.filter((r) => swarmHealth(r.seeders) !== 'dead');
+  const usable = o.takeUsenet ? [...alive, ...usenet] : alive;
+  const usenetSkipped = o.takeUsenet ? 0 : usenet.length;
 
   /**
    * 🔴 THE AUDIOBOOK RANKER IS THE ONE WITH A QUALITY KEY UNDER THE BAND.
@@ -995,15 +1056,16 @@ function evaluate(
    * not by design. The cut happens after the identity filter, in the caller.
    */
   const offers: Offer[] = (
-    o.isAudio ? rankAudiobooks(alive, { wantGraphicAudio: o.wantsGraphic }) : rankReleases(alive)
+    o.isAudio ? rankAudiobooks(usable, { wantGraphicAudio: o.wantsGraphic }) : rankReleases(usable)
   ).map((r) => ({
     label: describe(r),
     work: o.work ? matchWork(r.title, o.work).score : WORK_MATCH.PARTIAL,
-    band: swarmRank(r.seeders),
+    band: r.protocol === 'usenet' ? swarmRank(HEALTHY_IRC_BAND) : swarmRank(r.seeders),
     format: o.isAudio ? 0 : formatScore(r.title),
-    seeders: r.seeders,
+    seeders: r.protocol === 'usenet' ? 0 : r.seeders,
     value: {
       source: 'prowlarr',
+      protocol: r.protocol,
       infoHash: r.infoHash,
       title: r.title,
       ...(r.magnetUri ? { magnetUri: r.magnetUri } : {}),
@@ -1020,7 +1082,8 @@ function evaluate(
     searched: o.searched,
     before: all.length,
     releases,
-    deadCount: releases.length - alive.length,
+    deadCount: torrents.length - alive.length,
+    usenetSkipped,
     offers,
     candidates: o.work ? offers.filter((x) => x.work !== WORK_MATCH.NOT_THIS_WORK) : offers,
   };
@@ -1044,6 +1107,12 @@ function outcome(a: Attempt): string {
   if (a.before === 0) return 'nothing at all';
   if (a.candidates.length > 0) return `${a.candidates.length} usable`;
   if (a.releases.length === 0) return `${a.before} result(s), all of them the wrong GraphicAudio kind`;
+  if (a.usenetSkipped > 0 && a.candidates.length === 0) {
+    const torrentRows = a.releases.length - a.usenetSkipped;
+    if (torrentRows === 0 || a.deadCount === torrentRows) {
+      return `${a.usenetSkipped} Usenet result(s), not offered`;
+    }
+  }
   if (a.deadCount === a.releases.length) return `${a.before} result(s), every swarm dead`;
   return `${a.before} result(s), none a copy of that book`;
 }

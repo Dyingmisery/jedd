@@ -82,13 +82,18 @@ export interface MediaAddSubject {
  */
 export interface EbookDeliverSubject {
   /** Which fetcher completes this. The model never supplies it. */
-  source: 'prowlarr' | 'irc';
+  source: 'prowlarr' | 'irc' | 'sab';
   title: string;
-  /** Prowlarr only: the torrent to watch for. */
+  /** Prowlarr torrent only: the torrent to watch for. */
   infoHash?: string;
   /** IRC only: the exact channel command, and the bot that must still be present. */
   command?: string;
   bot?: string;
+  /**
+   * SABnzbd only. Persisted on the follow-up so a restart polls this job
+   * instead of submitting the NZB again.
+   */
+  nzoId?: string;
 }
 
 /**

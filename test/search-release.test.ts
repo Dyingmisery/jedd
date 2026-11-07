@@ -80,8 +80,10 @@ test('🔴 the stored option is EXACTLY the shape add_audiobook already reads', 
   assert.deepEqual(picked.option.value, {
     // `source` was added when IRC became a second source. It is the discriminant
     // `send_ebook` switches on, so the consumer never has to guess which fetcher
-    // a pick belongs to.
+    // a pick belongs to. `protocol` is the same kind of discriminant for Usenet;
+    // add_audiobook does not read it and still grabs this hash.
     source: 'prowlarr',
+    protocol: 'torrent',
     infoHash: HASH_A,
     title: 'Project Hail Mary',
     magnetUri: `magnet:?xt=urn:btih:${HASH_A}&tr=x`,

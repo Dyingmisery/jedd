@@ -453,6 +453,19 @@ async function main(): Promise<void> {
     console.error(`[jedd] not configured, so NOT offered (${off.length}):`);
     for (const line of off) console.error(`[jedd]   - ${line}`);
   }
+  if (config.kindle.smtpPassword && (!config.sabnzbd.baseUrl || !config.sabnzbd.apiKey)) {
+    console.error(
+      '[jedd] usenet ebooks off — set SABNZBD_URL and SABNZBD_API_KEY. Torrent and IRC ebook paths are unchanged.',
+    );
+  } else if (
+    config.sabnzbd.baseUrl &&
+    config.sabnzbd.apiKey &&
+    (!config.sabnzbd.storagePrefix || !config.sabnzbd.localDir)
+  ) {
+    console.error(
+      '[jedd] usenet ebooks off until SABNZBD_STORAGE_PREFIX and SABNZBD_LOCAL_DIR are set. Nothing will be queued.',
+    );
+  }
 
   const reg = await client.ensureWebhook(config.bluebubbles.publicUrl, ['new-message']);
   console.error(`[jedd] webhook ${reg.outcome}: ${config.bluebubbles.publicUrl}`);
