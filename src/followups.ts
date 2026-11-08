@@ -53,6 +53,8 @@ export interface MediaAddSubject {
   /** tvdbId for a series, tmdbId for a movie — never the internal row id. */
   id: number;
   title: string;
+  /** Release year, when the catalogue line had one. Omitted from the text if absent. */
+  year?: number;
   /** Empty for a movie. For a series, ONLY the seasons actually requested. */
   seasons: number[];
 }

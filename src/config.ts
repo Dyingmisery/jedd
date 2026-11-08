@@ -93,6 +93,11 @@ export interface Config {
   openLibrary: { baseUrl: string };
   sonarr: { baseUrl: string; apiKey: string; rootFolder: string; qualityProfileId: number };
   radarr: { baseUrl: string; apiKey: string; rootFolder: string; qualityProfileId: number };
+  /**
+   * Read-only Plex check. Empty url or token means "not configured": Jedd must
+   * not say a title is available. The token is sent as a header, never in the path.
+   */
+  plex: { baseUrl: string; token: string };
   bluebubbles: {
     /**
      * 🔴 `:1234` is JEDD (jedd@example.com). `:1235` is Jeff's PERSONAL
@@ -560,6 +565,10 @@ export function loadConfig(): Config {
       // SILENTLY into the wrong folder rather than erroring.
       rootFolder: process.env.RADARR_ROOT_FOLDER ?? '/media/movies',
       qualityProfileId: Number(process.env.RADARR_QUALITY_PROFILE_ID ?? 1),
+    },
+    plex: {
+      baseUrl: (process.env.PLEX_URL ?? '').trim().replace(/\/+$/, ''),
+      token: (process.env.PLEX_TOKEN ?? '').trim(),
     },
     bluebubbles: {
       baseUrl: process.env.BLUEBUBBLES_URL ?? 'http://127.0.0.1:1234',

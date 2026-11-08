@@ -1,6 +1,8 @@
 import { ArrClient, type FetchImpl } from '../media/arr.js';
 import { typeVerdict, orderForDisplay, type Candidate } from '../media/matching.js';
-import { fail, ok, type Tool } from './types.js';
+import { confirmLine } from '../media/plex.js';
+import { fetchAllowlistedPoster } from '../media/poster.js';
+import { fail, ok, type Tool, type ToolContext } from './types.js';
 
 /**
  * "Can you get X?" — what COULD be added.
@@ -99,46 +101,76 @@ export function makeCatalogueSearch(fetchImpl?: FetchImpl): Tool {
               `${shows.candidates.length} show result(s)).`,
           );
         case 'ambiguous': {
-          const listed = remember([
-            { label: `${describe(verdict.movie.best)} — film`, value: { arr: 'movie', id: verdict.movie.best.id, title: verdict.movie.best.title } },
-            { label: `${describe(verdict.series.best)} — show`, value: { arr: 'series', id: verdict.series.best.id, title: verdict.series.best.title } },
-          ]);
-          return ok(
-            `AMBIGUOUS — ${verdict.detail}` +
-              (listed ? `${listed}\n  (offer these as a numbered choice; resolve_choice maps their reply back)` : ''),
-          );
+          const options = [
+            optionOf(verdict.movie.best, 'movie'),
+            optionOf(verdict.series.best, 'series'),
+          ];
+          const listed = remember(options);
+          const reply = confirmLine(options.map((o) => o.value));
+          await sendNumberedPosters(ctx, options, fetchImpl);
+          return { ...ok(`AMBIGUOUS — ${verdict.detail}${listed}\n${reply}\nDo not add either. A number they reply is the stored option.`), verbatimReply: reply };
         }
         case 'movie': {
           if (verdict.pick.contested) {
-            const listed = remember(
-              orderForDisplay(title, films.candidates)
-                .slice(0, 5)
-                .map((c) => ({ label: `${describe(c)} — film`, value: { arr: 'movie', id: c.id, title: c.title } })),
-            );
-            return ok(`FILM (CONTESTED) — do NOT add without asking. Offer these:${listed}`);
+            const options = orderForDisplay(title, films.candidates).slice(0, 3).map((c) => optionOf(c, 'movie'));
+            const listed = remember(options);
+            const reply = confirmLine(options.map((o) => o.value));
+            await sendNumberedPosters(ctx, options, fetchImpl);
+            return { ...ok(`FILM (CONTESTED) — do NOT add without asking.${listed}\n${reply}`), verbatimReply: reply };
           }
           return ok(`FILM — ${describe(verdict.pick.best)} (radarr tmdbId ${verdict.pick.best.id}).`);
         }
         case 'series': {
           if (verdict.pick.contested) {
-            const listed = remember(
-              orderForDisplay(title, shows.candidates)
-                .slice(0, 5)
-                .map((c) => ({
-                  label: `${describe(c)} — show`,
-                  value: { arr: 'series', id: c.id, title: c.title, network: c.network },
-                })),
-            );
-            return ok(
-              `SHOW (CONTESTED) — multiple near-exact title matches (often different networks). ` +
-                `Do NOT add without asking. Offer these:${listed}`,
-            );
+            const options = orderForDisplay(title, shows.candidates).slice(0, 3).map((c) => optionOf(c, 'series'));
+            const listed = remember(options);
+            const reply = confirmLine(options.map((o) => o.value));
+            await sendNumberedPosters(ctx, options, fetchImpl);
+            return { ...ok(`SHOW (CONTESTED) — do NOT add without asking.${listed}\n${reply}`), verbatimReply: reply };
           }
           return ok(`SHOW — ${describe(verdict.pick.best)} (sonarr tvdbId ${verdict.pick.best.id}).`);
         }
       }
     },
   };
+}
+
+function optionOf(c: Candidate, arr: 'movie' | 'series'): {
+  label: string;
+  value: { arr: 'movie' | 'series'; id: number; title: string; year?: number; network?: string; posterUrl?: string };
+} {
+  return {
+    label: `${describe(c)} — ${arr === 'movie' ? 'film' : 'show'}`,
+    value: {
+      arr,
+      id: c.id,
+      title: c.title,
+      ...(c.year ? { year: c.year } : {}),
+      ...(c.network ? { network: c.network } : {}),
+      ...(c.posterUrl ? { posterUrl: c.posterUrl } : {}),
+    },
+  };
+}
+
+/**
+ * Send poster 1, then 2, then 3. Stop at the first miss so a later poster is
+ * never shown in an earlier slot. A miss does not change the numbered text.
+ */
+async function sendNumberedPosters(
+  ctx: ToolContext,
+  options: { value: { posterUrl?: string } }[],
+  fetchImpl?: FetchImpl,
+): Promise<void> {
+  if (!ctx.sendImage) return;
+  const fetchPoster = fetchImpl ?? ((url: string, init?: RequestInit) => fetch(url, init));
+  for (let i = 0; i < options.length; i++) {
+    const remote = options[i]!.value.posterUrl;
+    if (!remote) return;
+    const bytes = await fetchAllowlistedPoster(remote, fetchPoster);
+    if (!bytes) return;
+    const sent = await ctx.sendImage(`${i + 1}.jpg`, bytes);
+    if (!sent) return;
+  }
 }
 
 function describe(c: Candidate): string {

@@ -31,6 +31,7 @@ import { InviteLedger } from './invite-ledger.js';
 import { JfagoClient } from './jfago.js';
 import { AbsClient } from './audiobookshelf.js';
 import { runDueFollowups } from './followup-runner.js';
+import { plexFromConfig } from './media/plex.js';
 import { proveShellIdentityIsSafe } from './identity-probe.js';
 import { KindleRegistry } from './kindle.js';
 import { IrcEbooks } from './media/irc-ebooks.js';
@@ -412,7 +413,17 @@ async function main(): Promise<void> {
   }
 
   const tools = buildTools(config, shellIdentity, { invite, absInvite, ebook, ...(irc ? { irc } : {}) });
-  const agent = new Agent(config, llm, recordTurn, tools, history, followups, choices, kindle);
+  const agent = new Agent(
+    config,
+    llm,
+    recordTurn,
+    tools,
+    history,
+    followups,
+    choices,
+    kindle,
+    (handle, filename, bytes) => connector.sendImage(handle, filename, bytes),
+  );
 
   console.error(
     `[jedd] model=${llm.label} owner=${config.ownerHandle} ` +
@@ -538,6 +549,7 @@ async function main(): Promise<void> {
     mounts: DEFAULT_MOUNTS,
     onlySendTo: ebook.onlySendTo,
     ...(irc ? { irc } : {}),
+    ...(plexFromConfig(config.plex) ? { plex: plexFromConfig(config.plex)! } : {}),
   };
   const timer = setInterval(() => {
     void runDueFollowups(followups, followupDeps);

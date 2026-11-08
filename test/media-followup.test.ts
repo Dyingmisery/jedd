@@ -94,7 +94,8 @@ test('🔴 a GUEST is told the outcome of their own media request', async () => 
   const { sent } = await run(GUEST, null as never, { 1: [52, 52], 2: [52, 52], 3: [52, 52] });
   assert.equal(sent.length, 1, 'the guest who asked must hear back');
   assert.equal(sent[0]?.to, GUEST);
-  assert.match(sent[0]!.text, /ready to watch/i);
+  assert.match(sent[0]!.text, /cannot check Plex/i);
+  assert.doesNotMatch(sent[0]!.text, /available on Plex/i);
 });
 
 test('CONTROL: the owner is also told — the guest rule did not replace the owner one', async () => {
@@ -208,6 +209,7 @@ test('🔴 when NOTHING at all downloads, the user is still told — and told it
     assert.ok(sent.length >= 1, 'silence is the defect; it must speak');
     assert.match(sent[0]!.text, /nothing has downloaded/i);
     assert.match(sent[0]!.text, /will not arrive on its own/i);
+    assert.doesNotMatch(sent[0]!.text, /available on Plex/i);
     assert.equal(last?.[0]?.action, 'abandoned');
   } finally {
     globalThis.fetch = orig;

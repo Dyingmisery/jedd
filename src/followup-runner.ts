@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import { ArrClient } from './media/arr.js';
+import { availabilityLine, type PlexChecker } from './media/plex.js';
 import { deliverEbook } from './media/ebook-deliver.js';
 import {
   ebookAttemptCeiling,
@@ -88,6 +89,8 @@ export interface FollowupDeps {
   sleep?: (ms: number) => Promise<void>;
   jellyfin?: (config: Config, path: string) => Promise<JellyfinResponse>;
   now?: () => Date;
+  /** Absent means Plex is not configured. Never treated as "available". */
+  plex?: PlexChecker;
 }
 
 export interface FollowupOutcome {
@@ -463,25 +466,62 @@ async function runMediaAdd(
   }
   const arrConfig = subject.arr === 'series' ? deps.config.sonarr : deps.config.radarr;
   const client = new ArrClient(arrConfig, subject.arr);
+
+  if (deps.plex) {
+    const view = await deps.plex.available({
+      arr: subject.arr,
+      id: subject.id,
+      seasons: subject.seasons,
+      now,
+    });
+    if (view.state === 'ready') {
+      const sent = await speak(availabilityLine(subject.title, subject.arr, subject.seasons));
+      store.resolve(followup.id, 'done', 'on plex', now);
+      return { id: followup.id, action: 'restored', sent, detail: 'on plex' };
+    }
+    if (view.state === 'unknown') {
+      return await deferOrGiveUp(
+        followup,
+        store,
+        now,
+        `could not check Plex for "${subject.title}"`,
+        () => speak(`I couldn't confirm whether ${subject.title} is on Plex, so I have stopped checking.`),
+        MEDIA_RECHECK_MS,
+      );
+    }
+    // not-ready falls through. An arr import is not availability.
+  }
+
   const p = await client.progress(subject.id, subject.seasons);
 
   // Cannot establish the state -> defer and say so when out of deferrals. Never
   // guess, and never report "nothing arrived" when the truth is "I could not look".
   if (p.state === 'unknown') {
-    return await deferOrGiveUp(followup, store, now, `could not check on "${subject.title}": ${p.detail}`, () =>
-      speak(
-        `${why}\n\nI could not find out what happened to "${subject.title}" — ${p.detail} ` +
-          'I have stopped checking rather than leaving you waiting on a machine that cannot see. ' +
-          'Ask me and I will look again.',
-      ),
+    return await deferOrGiveUp(
+      followup,
+      store,
+      now,
+      `could not check on "${subject.title}": ${p.detail}`,
+      () => speak(`I could not check on "${subject.title}", so I have stopped.`),
+      MEDIA_RECHECK_MS,
     );
   }
 
   if (p.state === 'complete') {
+    if (deps.plex) {
+      return await deferOrGiveUp(
+        followup,
+        store,
+        now,
+        `not on plex yet: ${p.detail}`,
+        () => speak(`I stopped waiting on ${subject.title}. It is not on Plex yet.`),
+        MEDIA_RECHECK_MS,
+      );
+    }
     const sent = await speak(
-      `${why}\n\nGood news — ${p.detail}. It is ready to watch on Jellyfin.`,
+      `I cannot check Plex from here, so I will not call "${subject.title}" available.`,
     );
-    store.resolve(followup.id, 'done', `complete: ${p.detail}`, now);
+    store.resolve(followup.id, 'done', `complete, plex unchecked: ${p.detail}`, now);
     return { id: followup.id, action: 'restored', sent, detail: p.detail };
   }
 
@@ -493,8 +533,7 @@ async function runMediaAdd(
       return { id: followup.id, action: 'deferred', sent: false, detail: `partial: ${p.detail}` };
     }
     const sent = await speak(
-      `${why}\n\n${p.detail}. Some of it arrived and the rest has not, and I have stopped ` +
-        'watching for it. Ask me to try again if you still want the missing part.',
+      `${p.detail}. Some of it arrived and the rest has not, and I have stopped watching for it.`,
     );
     store.resolve(followup.id, 'abandoned', `partial at give-up: ${p.detail}`, now);
     return { id: followup.id, action: 'abandoned', sent, detail: p.detail };
@@ -507,9 +546,7 @@ async function runMediaAdd(
     return { id: followup.id, action: 'deferred', sent: false, detail: `nothing yet: ${p.detail}` };
   }
   const sent = await speak(
-    `${why}\n\n${p.detail} — nothing has downloaded, and I have stopped waiting for it. ` +
-      'That usually means no release is available rather than something being stuck. ' +
-      'It will not arrive on its own; ask me and I will look again.',
+    `${p.detail} — nothing has downloaded, and it will not arrive on its own. I have stopped waiting.`,
   );
   store.resolve(followup.id, 'abandoned', `nothing arrived: ${p.detail}`, now);
   return { id: followup.id, action: 'abandoned', sent, detail: p.detail };

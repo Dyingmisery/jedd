@@ -685,6 +685,49 @@ export class BlueBubblesClient {
   }
 
   /**
+   * One JPEG, via the normal attachment route. `method` is apple-script so this
+   * does not require the private-API helper. A failure is a false result, not a
+   * thrown error: the text list is still the thing the person confirms.
+   */
+  async sendAttachment(to: string, filename: string, bytes: Buffer): Promise<SendResult> {
+    try {
+      const chatGuid = await this.resolveChatGuid(to);
+      const form = new FormData();
+      form.append('chatGuid', chatGuid);
+      form.append('tempGuid', `jedd-img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      form.append('name', filename);
+      form.append('method', 'apple-script');
+      form.append('attachment', new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' }), filename);
+      const res = await this.fetchImpl(this.url('/message/attachment'), {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(BlueBubblesClient.PLAIN_SEND_TIMEOUT_MS),
+      });
+      if (res.status >= 400) {
+        return {
+          accepted: false,
+          guid: null,
+          delivery: 'failed',
+          detail: `BlueBubbles refused the attachment (http ${res.status}).`,
+        };
+      }
+      return {
+        accepted: true,
+        guid: null,
+        delivery: 'unknown',
+        detail: 'attachment accepted with no error code — this is NOT a delivery confirmation',
+      };
+    } catch {
+      return {
+        accepted: false,
+        guid: null,
+        delivery: 'failed',
+        detail: 'BlueBubbles attachment request failed before a response.',
+      };
+    }
+  }
+
+  /**
    * ⚠️ Long, and deliberately not `this.timeoutMs`. An anchored send is a
    * Private API send: it waits for the message to appear in the iMessage
    * database before answering, so it is legitimately slower than the AppleScript

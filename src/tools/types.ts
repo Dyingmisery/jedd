@@ -54,6 +54,11 @@ export interface ToolContext {
   userTurns?: string[];
   /** Verified delivery addresses, keyed by sender. Never model-supplied. */
   kindle?: KindleRegistry;
+  /**
+   * Send one JPEG to this person. Failures are reported as false and must not
+   * change whether a request was accepted. Optional: tests omit it.
+   */
+  sendImage?: (filename: string, bytes: Buffer) => Promise<boolean>;
 }
 
 /**
@@ -68,6 +73,11 @@ export interface ToolResult {
   ok: boolean;
   /** Rendered back to the model as the tool message content. */
   content: string;
+  /**
+   * When set, this exact text is what the person is sent, and the model does
+   * not get another turn to rephrase it.
+   */
+  verbatimReply?: string;
 }
 
 export interface Tool {

@@ -23,6 +23,11 @@ export interface Candidate {
   network?: string;
   /** Relative popularity within its own catalogue, when the source provides it. */
   popularity?: number;
+  /**
+   * External poster URL from the arr lookup (`remotePoster` or an images
+   * entry's `remoteUrl`). Never the local `url`, which is a cover path.
+   */
+  posterUrl?: string;
 }
 
 export type MediaType = 'movie' | 'series';

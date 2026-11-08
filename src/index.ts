@@ -5,6 +5,7 @@ import { proveShellIdentityIsSafe } from './identity-probe.js';
 import { StdoutConnector, withPresence } from './connector.js';
 import { FollowupStore } from './followups.js';
 import { runDueFollowups } from './followup-runner.js';
+import { plexFromConfig } from './media/plex.js';
 import { imapMailboxReader, imapSettingsFrom } from './kindle-mailbox.js';
 import { createLlmClient } from './llm.js';
 import { ChoiceStore } from './choices.js';
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
      * reason that is purely about which process happened to pick it up.
      */
     ...(mailbox ? { mailbox } : {}),
+    ...(plexFromConfig(config.plex) ? { plex: plexFromConfig(config.plex) } : {}),
   };
   const timer = setInterval(() => {
     void runDueFollowups(followups, followupDeps).then(report);

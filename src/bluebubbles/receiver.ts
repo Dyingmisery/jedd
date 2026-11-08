@@ -516,6 +516,16 @@ export class BlueBubblesConnector implements Connector {
    * paths would be two places for the audience check to drift, and the drift
    * would be invisible: each path is individually plausible.
    */
+  /**
+   * Poster for a numbered choice. Same audience gate as a text. A refusal or a
+   * transport failure returns false and does not change the request.
+   */
+  async sendImage(toHandle: string, filename: string, bytes: Buffer): Promise<boolean> {
+    if (!this.allowed(toHandle)) return false;
+    const r = await this.client.sendAttachment(toHandle, filename, bytes);
+    return r.accepted;
+  }
+
   async send(toHandle: string, text: string, inReplyTo?: string, record?: SendRecord): Promise<void> {
     const r = await this.sendReporting(toHandle, text, inReplyTo);
     /**

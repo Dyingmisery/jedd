@@ -61,6 +61,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     openLibrary: { baseUrl: 'http://openlibrary.invalid' },
     sonarr: { baseUrl: 'http://sonarr.invalid:8989/sonarr/api/v3', apiKey: 'test-key', rootFolder: '/tv', qualityProfileId: 9 },
     radarr: { baseUrl: 'http://radarr.invalid:7878/radarr/api/v3', apiKey: 'test-key', rootFolder: '/movies', qualityProfileId: 6 },
+    plex: { baseUrl: '', token: '' },
     dispatcharr: { baseUrl: 'http://dispatcharr.test:9191' },
     // Non-empty so `whats_popular` is REGISTERED in tests. It is never used as a
     // credential: every test routes a stub fetch, and the client only ever talks

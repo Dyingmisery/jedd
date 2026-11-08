@@ -94,6 +94,7 @@ that row and nothing else.
 | `HP_SHELL_SSH_HOST` | `hp_shell` — free-form read-only shell. See the security note below. |
 | `KINDLE_SMTP_*` | **4 tools**: find an ebook and send it to a Kindle, plus address intake |
 | `SABNZBD_URL` + `SABNZBD_API_KEY` + `SABNZBD_STORAGE_PREFIX` + `SABNZBD_LOCAL_DIR` | Usenet ebooks: queue an NZB in SABnzbd and mail it when the job completes. Torrent and IRC ebooks work without this |
+| `PLEX_URL` + `PLEX_TOKEN` | Say a requested movie or the requested seasons are on Plex, only after a matching guid and a real media file. Posters do not use this |
 | `JFAGO_URL` + `JFAGO_PASSWORD` | Invite someone to your Jellyfin |
 | `DISPATCHARR_URL` | Live-TV channel health |
 | `IRC_EBOOKS=1` | A second ebook source besides Prowlarr |
@@ -137,6 +138,20 @@ says `Completed` and includes a storage path, the file is an EPUB, PDF, or
 AZW3 inside that mount, and the existing validator accepts the bytes. The
 iMessage says the mail server accepted the file. It does not say the Kindle
 device has it. Amazon refusals still come back through the existing IMAP check.
+
+### Movie and show requests
+
+A contested title asks which one, with a number, the year, and a poster when
+Radarr or Sonarr returned an allowlisted `remotePoster`. A reply that is only
+that number uses the stored row. It does not search again. The first text after
+an accepted add is "Your request for Title (Year) has been added." The second,
+"Title is now available on Plex.", is sent only after Plex returns that same
+tmdb or tvdb id and a media file. A season request names those seasons. An
+episode that has not aired yet does not count, and one episode on disk is not
+the whole show. If `PLEX_URL` or `PLEX_TOKEN` is empty, Jedd says it cannot
+check Plex. It does not call the title available. Posters are fetched only from
+`https://image.tmdb.org` and `https://artworks.thetvdb.com`. No TMDB read token
+is required for that. A missing poster does not cancel the request.
 
 ### 🔴 If you set the two SSH variables, make them different accounts
 
