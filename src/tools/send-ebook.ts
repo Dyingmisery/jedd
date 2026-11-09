@@ -1,5 +1,12 @@
 import { resolveOfKind } from '../choices.js';
-import { deliverEbook } from '../media/ebook-deliver.js';
+import {
+  bookAlreadyRequested,
+  bookCouldNotAdd,
+  bookEmailed,
+  bookFailureLine,
+  bookRequestAdded,
+  deliverEbook,
+} from '../media/ebook-deliver.js';
 import { grabTorrent, type MountMap } from '../media/grab.js';
 import { resolveMagnet, type FetchImpl } from '../media/prowlarr.js';
 import { SabnzbdClient } from '../media/sabnzbd.js';
@@ -267,8 +274,12 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
         { mayBlock: false },
       );
 
-      if (attempt.state === 'delivered') return ok(`SENT — ${attempt.detail}`);
-      if (attempt.state === 'failed') return fail(`FAILED — ${attempt.detail}`);
+      if (attempt.state === 'delivered') {
+        return { ...ok(`SENT — ${attempt.detail}`), verbatimReply: bookEmailed(title) };
+      }
+      if (attempt.state === 'failed') {
+        return { ...fail(`FAILED — ${attempt.detail}`), verbatimReply: bookFailureLine(title, attempt.detail) };
+      }
 
       /**
        * 🔴 NOT HERE YET — AND THIS IS WHERE THE OLD BUG LIVED.
@@ -305,10 +316,13 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
         });
       }
 
-      return ok(
-        `STARTED — ${attempt.detail} NOTHING HAS BEEN SENT YET. Tell them it is on the ` +
-          'way and that you will message them when it actually lands — do not say it has been sent.',
-      );
+      return {
+        ...ok(
+          `STARTED — ${attempt.detail} NOTHING HAS BEEN SENT YET. Tell them it is on the ` +
+            'way and that you will message them when it actually lands — do not say it has been sent.',
+        ),
+        verbatimReply: bookRequestAdded(title),
+      };
     },
   };
 }
@@ -339,11 +353,14 @@ async function submitUsenet(
   }
   const pending = ctx.followups.pendingEbook(ctx.senderHandle, title);
   if (pending) {
-    return ok(
-      `STARTED — "${title}" is already being fetched. NOTHING HAS BEEN SENT YET. Do not start a second copy. ` +
-        'Tell them you will message them when the mail server has actually accepted the file — do not say it ' +
-        'has been sent, and do not say it is on their Kindle.',
-    );
+    return {
+      ...ok(
+        `STARTED — "${title}" is already being fetched. NOTHING HAS BEEN SENT YET. Do not start a second copy. ` +
+          'Tell them you will message them when the mail server has actually accepted the file — do not say it ' +
+          'has been sent, and do not say it is on their Kindle.',
+      ),
+      verbatimReply: bookAlreadyRequested(title),
+    };
   }
   const added = await new SabnzbdClient({
     baseUrl: sab.baseUrl,
@@ -352,7 +369,7 @@ async function submitUsenet(
     ...(deps.sabFetch ? { fetchImpl: deps.sabFetch } : {}),
   }).addUrl(downloadUrl);
   if (added.state !== 'accepted') {
-    return fail(`FAILED — ${added.detail} Nothing was sent.`);
+    return { ...fail(`FAILED — ${added.detail} Nothing was sent.`), verbatimReply: bookCouldNotAdd(title) };
   }
   ctx.followups.schedule({
     kind: 'ebook-deliver',
@@ -362,11 +379,14 @@ async function submitUsenet(
     observed: `SABnzbd accepted the NZB as job ${added.nzoId}. Nothing has been mailed.`,
     ebook: { source: 'sab', title, nzoId: added.nzoId },
   });
-  return ok(
-    `STARTED — SABnzbd accepted "${title}" in category ${sab.category}. NOTHING HAS BEEN SENT YET. ` +
-      'The download has not finished. Tell them it is queued and that you will message them when the ' +
-      'mail server has actually accepted the file — do not say it has been sent, and do not say it is on their Kindle.',
-  );
+  return {
+    ...ok(
+      `STARTED — SABnzbd accepted "${title}" in category ${sab.category}. NOTHING HAS BEEN SENT YET. ` +
+        'The download has not finished. Tell them it is queued and that you will message them when the ' +
+        'mail server has actually accepted the file — do not say it has been sent, and do not say it is on their Kindle.',
+    ),
+    verbatimReply: bookRequestAdded(title),
+  };
 }
 
 /** Amazon has rejected `.mobi` since 2022, and does it silently. */

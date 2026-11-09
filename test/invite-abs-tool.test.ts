@@ -146,6 +146,7 @@ test('tool is absent when ABS is not configured', () => {
       radarr: true,
       prowlarr: true,
       jellyfin: true,
+      plex: false,
       qbittorrent: true,
       dispatcharr: true,
       audiobookshelf: false,

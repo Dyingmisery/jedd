@@ -69,6 +69,23 @@ export class PlexClient implements PlexChecker {
   ) {}
 
   async available(query: PlexQuery): Promise<PlexView> {
+    const found = await this.inspect(query);
+    if (found.state === 'unconfigured' || found.state === 'unknown') return { state: found.state };
+    if (found.state === 'absent' || found.state === 'movie') {
+      return { state: found.state === 'movie' && found.hasFile ? 'ready' : 'not-ready' };
+    }
+    if (query.seasons.length === 0) return { state: 'not-ready' };
+    const ready = query.seasons.every(
+      (n) => found.seasons.find((s) => s.seasonNumber === n)?.status === 'ready',
+    );
+    return { state: ready ? 'ready' : 'not-ready' };
+  }
+
+  /**
+   * Exact id plus files. A title hit is `absent`. A transport or HTTP failure
+   * is `unknown`, which is not the same sentence as "not on Plex".
+   */
+  async inspect(query: PlexQuery): Promise<PlexInspect> {
     if (!this.opts.baseUrl.trim() || !this.opts.token.trim()) return { state: 'unconfigured' };
     try {
       const sections = await this.getJson('/library/sections');
@@ -78,19 +95,18 @@ export class PlexClient implements PlexChecker {
         const key = String(dir['key'] ?? '');
         if (!key) continue;
         const listed = await this.getJson(`/library/sections/${encodeURIComponent(key)}/all?includeGuids=1`);
-        const rows = metadataRows(listed);
-        for (const row of rows) {
+        for (const row of metadataRows(listed)) {
           const meta = readMeta(row);
           if (!guidMatches(meta.guids, query.arr, query.id)) continue;
-          if (query.arr === 'movie') return meta.hasFile ? { state: 'ready' } : { state: 'not-ready' };
+          if (query.arr === 'movie') return { state: 'movie', hasFile: meta.hasFile };
           const ratingKey = String(row['ratingKey'] ?? '');
-          if (!ratingKey) return { state: 'not-ready' };
-          const leaves = await this.getJson(`/library/metadata/${encodeURIComponent(ratingKey)}/allLeaves`);
-          const seasons = seasonsFromLeaves(metadataRows(leaves));
-          return seasonsReady(query.seasons, seasons, query.now) ? { state: 'ready' } : { state: 'not-ready' };
+          const leaves = ratingKey
+            ? seasonsFromLeaves(metadataRows(await this.getJson(`/library/metadata/${encodeURIComponent(ratingKey)}/allLeaves`)))
+            : [];
+          return { state: 'series', seasons: seasonVerdicts(leaves, query.seasons, query.now) };
         }
       }
-      return { state: 'not-ready' };
+      return { state: 'absent' };
     } catch {
       return { state: 'unknown' };
     }
@@ -127,8 +143,15 @@ export class PlexClient implements PlexChecker {
 }
 
 export function plexFromConfig(plex: { baseUrl: string; token: string }): PlexChecker | undefined {
+  return plexCheckerFor(plex);
+}
+
+export function plexCheckerFor(
+  plex: { baseUrl: string; token: string },
+  fetchImpl?: FetchImpl,
+): PlexClient | undefined {
   if (!plex.baseUrl.trim() || !plex.token.trim()) return undefined;
-  return new PlexClient(plex);
+  return new PlexClient({ ...plex, ...(fetchImpl ? { fetchImpl } : {}) });
 }
 
 function containerOf(body: unknown): Record<string, unknown>[] {
@@ -203,6 +226,7 @@ export function addedLine(title: string, year: number | undefined, arr: 'movie' 
 
 export function confirmLine(
   options: { arr: 'movie' | 'series'; title?: string; year?: number; network?: string }[],
+  purpose: 'add' | 'check' = 'add',
 ): string {
   const films = options.some((o) => o.arr === 'movie');
   const shows = options.some((o) => o.arr === 'series');
@@ -213,5 +237,82 @@ export function confirmLine(
     const kind = o.arr === 'series' ? 'show' : 'movie';
     return `${i + 1}. ${o.title ?? 'Untitled'}${year}${network} — ${kind}`;
   });
-  return `Please confirm which ${which} you'd like to add.\n${lines.join('\n')}`;
+  const ask = purpose === 'check'
+    ? `Please confirm which ${which} you'd like me to check on Plex.`
+    : `Please confirm which ${which} you'd like to add.`;
+  return `${ask}\n${lines.join('\n')}`;
+}
+
+export type SeasonStatus = 'ready' | 'missing' | 'unaired';
+
+export interface SeasonVerdict {
+  seasonNumber: number;
+  status: SeasonStatus;
+}
+
+export type PlexInspect =
+  | { state: 'unconfigured' }
+  | { state: 'unknown' }
+  | { state: 'absent' }
+  | { state: 'movie'; hasFile: boolean }
+  | { state: 'series'; seasons: SeasonVerdict[] };
+
+function seasonVerdicts(seasons: PlexSeason[], requested: number[], now: Date): SeasonVerdict[] {
+  const numbers = new Set<number>([...seasons.map((s) => s.seasonNumber), ...requested]);
+  return [...numbers]
+    .filter((n) => n > 0)
+    .sort((a, b) => a - b)
+    .map((n) => {
+      const season = seasons.find((s) => s.seasonNumber === n);
+      if (!season || season.episodes.length === 0) return { seasonNumber: n, status: 'missing' };
+      const due = season.episodes.filter((ep) => !isFuture(ep.airedAt, now));
+      if (due.length === 0) return { seasonNumber: n, status: 'unaired' };
+      return { seasonNumber: n, status: due.every((ep) => ep.hasFile) ? 'ready' : 'missing' };
+    });
+}
+
+export function titled(title: string, year?: number): string {
+  return year && year > 0 ? `${title} (${year})` : title;
+}
+
+/** What a person is told. A series is never called on Plex without a season. */
+export function plexStatusLine(
+  title: string,
+  year: number | undefined,
+  found: PlexInspect,
+  seasons: number[] = [],
+): string {
+  const name = titled(title, year);
+  if (found.state === 'unconfigured') return 'I cannot check Plex from here.';
+  if (found.state === 'unknown') return `I couldn't confirm whether ${name} is on Plex.`;
+  if (found.state === 'absent') return `${name} is not on Plex.`;
+  if (found.state === 'movie') return found.hasFile ? `${name} is on Plex.` : `${name} is not on Plex.`;
+  const asked = seasons.length > 0;
+  const rows = asked
+    ? seasons.map((n) => found.seasons.find((s) => s.seasonNumber === n) ?? { seasonNumber: n, status: 'missing' as const })
+    : found.seasons.filter((s) => s.status !== 'unaired');
+  if (!asked && found.seasons.length > 0 && found.seasons.every((s) => s.status === 'unaired')) {
+    return `${name} has not aired yet, so I will not call it on Plex.`;
+  }
+  if (rows.length === 1 && rows[0]!.status === 'unaired') {
+    return `Season ${rows[0]!.seasonNumber} of ${name} has not aired yet, so I will not call it on Plex.`;
+  }
+  const ready = rows.filter((s) => s.status === 'ready').map((s) => s.seasonNumber);
+  const missing = rows.filter((s) => s.status === 'missing').map((s) => s.seasonNumber);
+  const unaired = rows.filter((s) => s.status === 'unaired').map((s) => s.seasonNumber);
+  const parts: string[] = [];
+  if (ready.length === 1) parts.push(`Season ${ready[0]} of ${name} is on Plex.`);
+  if (ready.length > 1) parts.push(`${seasonPhrase(ready)} of ${name} are on Plex.`);
+  if (missing.length === 1) parts.push(`Season ${missing[0]} of ${name} is not on Plex.`);
+  if (missing.length > 1) parts.push(`${seasonPhrase(missing)} of ${name} are not on Plex.`);
+  if (unaired.length === 1) parts.push(`Season ${unaired[0]} of ${name} has not aired yet.`);
+  if (unaired.length > 1) parts.push(`${seasonPhrase(unaired)} of ${name} have not aired yet.`);
+  if (parts.length === 0) return `${name} is not on Plex.`;
+  return parts.join(' ');
+}
+
+function seasonPhrase(nums: number[]): string {
+  const n = [...nums].sort((a, b) => a - b);
+  if (n.length === 1) return `Season ${n[0]}`;
+  return `Seasons ${n.slice(0, -1).join(', ')} and ${n[n.length - 1]}`;
 }

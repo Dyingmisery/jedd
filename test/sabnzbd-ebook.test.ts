@@ -420,6 +420,7 @@ test('send_ebook queues one NZB, stores the nzo id, and does not mail', async ()
   );
   assert.equal(r.ok, true);
   assert.match(r.content, /NOTHING HAS BEEN SENT YET/);
+  assert.equal(r.verbatimReply, 'Your request for Dune.epub has been added.');
   assert.match(r.content, /do not say it is on their Kindle/);
   assert.equal(r.content.includes(SECRET), false);
   assert.equal(r.content.includes(SAB_KEY), false);
@@ -441,6 +442,7 @@ test('send_ebook queues one NZB, stores the nzo id, and does not mail', async ()
   );
   assert.equal(posts, 1, 'a second send must not submit another NZB');
   assert.match(again.content, /already being fetched/);
+  assert.equal(again.verbatimReply, 'Your request for Dune.epub is already in.');
   assert.equal(mailed.length, 0);
 });
 
@@ -530,7 +532,7 @@ test('a restricted follow-up does not mail, and a failed job does not mail', asy
     ).fetch,
   });
   assert.equal(mailed.length, 0);
-  assert.match(spokeFail[0] ?? '', /could not send/i);
+  assert.match(spokeFail[0] ?? '', /could not email/i);
   assert.match(spokeFail[0] ?? '', /stopped trying/);
   assert.doesNotMatch(spokeFail[0] ?? '', /on its way to your Kindle/);
 });
@@ -578,8 +580,8 @@ test('a completed job mails once, says the mail server accepted it, and a restar
   assert.equal(first[0]?.sent, true);
   assert.equal(mailed.length, 1);
   assert.equal(mailed[0]?.to, 'readerone@kindle.com');
-  assert.match(spoke[0] ?? '', /NOT confirmed it reached the device/);
-  assert.match(spoke[0] ?? '', /mail server accepted it/);
+  assert.equal(spoke[0], 'Dune.epub has been emailed to your Kindle address.');
+  assert.doesNotMatch(spoke[0] ?? '', /on its way|reached the device|arrived/i);
   assert.equal(spoke.join('\n').includes(SAB_KEY), false);
 
   const restarted = new FollowupStore(path);
@@ -656,12 +658,15 @@ test('an ebook check waits about 30s and still budgets about 40 minutes', async 
   assert.equal(pending?.ebook?.nzoId, NZO);
   assert.equal(pending?.attempts, 0);
   const mailed: unknown[] = [];
+  const spoke: string[] = [];
   const t0 = Date.parse(pending!.dueAt);
   const deps = {
     config: withSab(root),
     kindle,
     now: () => new Date(t0),
-    send: async () => {},
+    send: async (_to: string, text: string) => {
+      spoke.push(text);
+    },
     mail: async (m: unknown) => {
       mailed.push(m);
       return { messageId: 'x' };
@@ -672,6 +677,7 @@ test('an ebook check waits about 30s and still budgets about 40 minutes', async 
   const looked = await runDueFollowups(restarted, deps, { kind: 'ebook-deliver' });
   assert.equal(looked[0]?.action, 'deferred');
   assert.equal(mailed.length, 0);
+  assert.deepEqual(spoke, []);
   assert.equal(posts.filter((mode) => mode === 'addurl').length, submitsBeforePoll);
   const after = restarted.pendingEbook(JEFF, 'Dune.epub');
   assert.equal(after?.ebook?.nzoId, NZO);

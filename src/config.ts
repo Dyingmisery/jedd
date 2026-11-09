@@ -382,6 +382,8 @@ export interface Config {
     radarr: boolean;
     prowlarr: boolean;
     jellyfin: boolean;
+    /** Both PLEX_URL and PLEX_TOKEN are set. Empty means the Plex tool is absent. */
+    plex: boolean;
     qbittorrent: boolean;
     dispatcharr: boolean;
     audiobookshelf: boolean;
@@ -659,6 +661,7 @@ export function loadConfig(): Config {
       radarr: Boolean((process.env.RADARR_API_KEY ?? '').trim()),
       prowlarr: Boolean((process.env.PROWLARR_API_KEY ?? '').trim()),
       jellyfin: Boolean((process.env.JELLYFIN_API_KEY ?? '').trim()),
+      plex: Boolean((process.env.PLEX_URL ?? '').trim() && (process.env.PLEX_TOKEN ?? '').trim()),
       audiobookshelf: Boolean((process.env.ABS_API_KEY ?? '').trim()),
       // 🔴 These two have NON-EMPTY defaults, so the env var is the only honest
       // test of whether anyone configured them.

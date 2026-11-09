@@ -1,5 +1,5 @@
 import { ArrClient, type FetchImpl } from '../media/arr.js';
-import { addedLine } from '../media/plex.js';
+import { addedLine, plexCheckerFor, plexStatusLine, titled } from '../media/plex.js';
 import { fail, ok, type Tool, type ToolContext, type ToolResult } from './types.js';
 
 /**
@@ -101,11 +101,7 @@ export function makeAddMovie(fetchImpl?: FetchImpl): Tool {
           return accepted(`STARTED — ${outcome.detail}${note}`, addedLine(title, year, 'movie', []));
         }
         case 'already-have':
-          // 🔴 SUCCESS, not failure. Never tell them to retry. Also not "on Plex".
-          return accepted(
-            `ALREADY_HAVE — ${outcome.detail}`,
-            `${title}${year ? ` (${year})` : ''} is already in the movie library. I have not checked Plex.`,
-          );
+          return accepted(`ALREADY_HAVE — ${outcome.detail}`, await alreadyInLibrary(ctx, fetchImpl, 'movie', id, title, year, []));
         case 'unknown':
           return notAdded(title, `UNKNOWN — ${outcome.detail}`);
         case 'failed':
@@ -189,7 +185,7 @@ export function makeAddSeries(fetchImpl?: FetchImpl): Tool {
         case 'already-have':
           return accepted(
             `ALREADY_HAVE — ${outcome.detail}`,
-            `${title}${year ? ` (${year})` : ''} is already in the show library. I have not checked Plex.`,
+            await alreadyInLibrary(ctx, fetchImpl, 'series', id, title, year, seasons),
           );
         case 'unknown':
           return notAdded(title, `UNKNOWN — ${outcome.detail}`);
@@ -254,6 +250,26 @@ function notAdded(title: string, content: string): ToolResult {
 
 function refuseWrite(): ToolResult {
   return { ...fail('Writes are disabled, so nothing was added.'), verbatimReply: 'Writes are disabled, so nothing was added.' };
+}
+
+async function alreadyInLibrary(
+  ctx: ToolContext,
+  fetchImpl: FetchImpl | undefined,
+  arr: 'movie' | 'series',
+  id: number,
+  title: string,
+  year: number | undefined,
+  seasons: number[],
+): Promise<string> {
+  const place = arr === 'movie' ? 'movie library' : 'show library';
+  const base = `${titled(title, year)} is already in the ${place}.`;
+  const client = plexCheckerFor(ctx.config.plex, fetchImpl);
+  if (!client) return `${base} I cannot check Plex from here.`;
+  const found = await client.inspect({ arr, id, seasons, now: new Date() });
+  if (found.state === 'unknown' || found.state === 'unconfigured') {
+    return `${base} I couldn't confirm whether it is on Plex.`;
+  }
+  return `${base} ${plexStatusLine(title, year, found, seasons)}`;
 }
 
 function alreadyRequested(title: string, year?: number): ToolResult {

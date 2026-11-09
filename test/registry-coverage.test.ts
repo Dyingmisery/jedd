@@ -96,7 +96,11 @@ test('🔴 every tool in ALL_TOOLS is reachable from buildTools under SOME confi
   // ALL_TOOLS is a documentation surface; `buildTools` is what production runs.
   // A tool present in the first and absent from the second is unreachable, which
   // is the exact state invite_to_jellyfin and send_ebook were in.
-  const config = testConfig({ readOnly: false, runbookPath: '/tmp/jedd-runbook.md' });
+  const config = testConfig({
+    readOnly: false,
+    runbookPath: '/tmp/jedd-runbook.md',
+    services: { ...testConfig().services, plex: true },
+  });
   const built = new Set(
     buildTools(config, { safe: true, reason: 'test', evidence: [] }, {
       invite: {

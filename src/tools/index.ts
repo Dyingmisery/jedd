@@ -22,6 +22,7 @@ import { makeCheckStatus } from './check-status.js';
 import { resolveChoice } from './choice.js';
 import { kindleStatus, saveKindleEmail } from './kindle.js';
 import { librarySearch } from './library.js';
+import { makePlexAvailability } from './plex-availability.js';
 import { makeFindGaps, makeGrabRelease, makeSearchEpisode } from './fill-gaps.js';
 import { makeIndexerAdmin } from './indexer-admin.js';
 import { makeInviteTool, type InviteDeps } from './invite.js';
@@ -62,6 +63,7 @@ import type { Tool } from './types.js';
 
 const GUEST_TOOLS: Tool[] = [
   librarySearch,
+  makePlexAvailability(),
   /**
    * 🔴 THE GENERIC READ IS GUEST-LEVEL, AND THE GATE IS THE DATA, NOT THE ROLE.
    *

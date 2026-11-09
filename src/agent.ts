@@ -255,6 +255,11 @@ function systemPrompt(config: Config, role: Role): string {
     '',
     'Use only the tools you have been given. If something is not among them, say you cannot do it',
     'rather than guessing at who is asking or what you might be permitted elsewhere.',
+    config.services.plex
+      ? 'If they ask whether something is on Plex, call plex_availability and use that result. ' +
+        'library_search is Jellyfin and Sonarr, not Plex. Do not say you have no Plex access when ' +
+        'plex_availability is available, and do not say a title is on Plex unless that tool said so.'
+      : '',
     '',
     '',
     // ── Conversational steering. PROSE ON PURPOSE. ───────────────────────────

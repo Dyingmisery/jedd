@@ -153,6 +153,10 @@ check Plex. It does not call the title available. Posters are fetched only from
 `https://image.tmdb.org` and `https://artworks.thetvdb.com`. No TMDB read token
 is required for that. A missing poster does not cancel the request.
 
+Asking whether a title is on Plex is a separate read. It uses the same `PLEX_URL` and `PLEX_TOKEN`, looks the title up in Radarr or Sonarr, and checks Plex for that id and a media file. It does not add or download anything. Jellyfin answers stay on the library search. If Plex is not configured, Jedd says it cannot check. It does not invent an answer.
+
+A book request says "Your request for Title has been added." only after the download is accepted. Checks while it downloads stay silent. After the mail server accepts the file, the text is "Title has been emailed to your Kindle address." That is not a claim the Kindle device has it. A failure or the end of the wait is one short line.
+
 ### 🔴 If you set the two SSH variables, make them different accounts
 
 `HP_ADMIN_SSH_HOST` is privileged (it needs docker). `HP_SHELL_SSH_HOST` is the

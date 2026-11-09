@@ -99,6 +99,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       radarr: true,
       prowlarr: true,
       jellyfin: true,
+      plex: false,
       audiobookshelf: true,
       qbittorrent: true,
       dispatcharr: true,

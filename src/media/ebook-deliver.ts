@@ -24,6 +24,42 @@ import { SabnzbdClient, type FetchImpl } from './sabnzbd.js';
  * step without its bytes being identified first.
  */
 
+export function bookRequestAdded(title: string): string {
+  return `Your request for ${title} has been added.`;
+}
+
+export function bookAlreadyRequested(title: string): string {
+  return `Your request for ${title} is already in.`;
+}
+
+/** SMTP accepted the message. This is not a claim the device has it. */
+export function bookEmailed(title: string): string {
+  return `${title} has been emailed to your Kindle address.`;
+}
+
+export function bookCouldNotAdd(title: string): string {
+  return `I could not add ${title}. Nothing was sent.`;
+}
+
+export function bookCouldNotEmail(title: string): string {
+  return `I could not email ${title}. Nothing was sent. I have stopped trying.`;
+}
+
+export function bookStoppedWaiting(title: string): string {
+  return `I stopped waiting for ${title}. It has not been emailed.`;
+}
+
+export function bookFailureLine(title: string, detail: string): string {
+  if (/Send-to-Kindle address/i.test(detail)) return detail;
+  if (/may already have gone/i.test(detail)) {
+    return `I could not tell whether ${title} was emailed. I have not tried again, because it may already have gone.`;
+  }
+  if (/WINDOWS EXECUTABLE/i.test(detail)) {
+    return `I could not email ${title}. The file was not a book. Nothing was sent. I have stopped trying.`;
+  }
+  return bookCouldNotEmail(title);
+}
+
 export type DeliverOutcome =
   /**
    * Handed to the mail server. Terminal, and the user should be told.

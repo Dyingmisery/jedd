@@ -156,7 +156,7 @@ function optionOf(c: Candidate, arr: 'movie' | 'series'): {
  * Send poster 1, then 2, then 3. Stop at the first miss so a later poster is
  * never shown in an earlier slot. A miss does not change the numbered text.
  */
-async function sendNumberedPosters(
+export async function sendNumberedPosters(
   ctx: ToolContext,
   options: { value: { posterUrl?: string } }[],
   fetchImpl?: FetchImpl,

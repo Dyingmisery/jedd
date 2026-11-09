@@ -1,7 +1,7 @@
 import type { Config } from './config.js';
 import { ArrClient } from './media/arr.js';
 import { availabilityLine, type PlexChecker } from './media/plex.js';
-import { deliverEbook } from './media/ebook-deliver.js';
+import { bookEmailed, bookFailureLine, bookStoppedWaiting, deliverEbook } from './media/ebook-deliver.js';
 import {
   ebookAttemptCeiling,
   MAX_ATTEMPTS,
@@ -582,10 +582,7 @@ async function runEbookDeliver(
   // a book was coming; a deployment gap must not become their silence.
   if (!deps.kindle || !deps.mail) {
     const detail = 'this deployment cannot send books (no address store or no mail sender)';
-    const sent = await speak(
-      `${why}\n\nI could not finish sending "${subject.title}" — ${detail}. ` +
-        'Nothing was sent, and I have stopped trying rather than leave you waiting.',
-    );
+    const sent = await speak(bookFailureLine(subject.title, detail));
     store.resolve(followup.id, 'abandoned', detail, now);
     return { id: followup.id, action: sent ? 'abandoned' : 'not-delivered', sent, detail };
   }
@@ -608,17 +605,15 @@ async function runEbookDeliver(
   );
 
   if (r.state === 'delivered') {
-    const sent = await speak(`${why}\n\nGood news — ${r.detail}`);
+    const sent = await speak(bookEmailed(subject.title));
     store.resolve(followup.id, 'done', r.detail, now);
     return { id: followup.id, action: 'restored', sent, detail: r.detail };
   }
 
   if (r.state === 'failed') {
     // Terminal and bad. This ALWAYS speaks: a book that is never coming is
-    // precisely what the person needs to hear.
-    const sent = await speak(
-      `${why}\n\nI could not send "${subject.title}" — ${r.detail} I have stopped trying.`,
-    );
+    // precisely what the person needs to hear. One line, not a progress report.
+    const sent = await speak(bookFailureLine(subject.title, r.detail));
     store.resolve(followup.id, 'abandoned', r.detail, now);
     return { id: followup.id, action: sent ? 'abandoned' : 'not-delivered', sent, detail: r.detail };
   }
@@ -626,11 +621,12 @@ async function runEbookDeliver(
   // `waiting` and `unknown` both mean "no verdict yet". Defer, and when the
   // deferrals run out say plainly that we stopped — never just fall silent.
   const gap = deps.config.ebookRecheckMs;
-  return await deferOrGiveUp(followup, store, now, `"${subject.title}": ${r.detail}`, () =>
-    speak(
-      `${why}\n\nI have stopped waiting for "${subject.title}" — ${r.detail} ` +
-        'It has not been sent. Ask me and I will try again.',
-    ),
+  return await deferOrGiveUp(
+    followup,
+    store,
+    now,
+    `"${subject.title}": ${r.detail}`,
+    () => speak(bookStoppedWaiting(subject.title)),
     gap,
     ebookAttemptCeiling(gap),
   );

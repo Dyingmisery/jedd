@@ -134,7 +134,8 @@ test('🔴 the follow-up actually fetches, validates and DELIVERS, then says so'
   assert.equal(mailed.length, 1, 'the book must actually be mailed');
   assert.equal(mailed[0]?.to, 'readerone@kindle.com', 'address from the registry, read at FIRE time');
   assert.ok(mailed[0]?.attachments[0]?.content.equals(EPUB));
-  assert.match(spoke[0]!.text, /on its way to your Kindle/);
+  assert.equal(spoke[0]!.text, 'A Book.epub has been emailed to your Kindle address.');
+  assert.doesNotMatch(spoke[0]!.text, /on its way|reached the device|arrived/i);
 });
 
 test('🔴 a bot that never answers TELLS the person — it does not go quiet', async () => {
@@ -165,7 +166,7 @@ test('🔴 a bot that never answers TELLS the person — it does not go quiet', 
   });
 
   assert.equal(out[0]?.sent, true, 'silence here is the defect this whole leg exists to fix');
-  assert.match(spoke[0]!, /could not send/i);
+  assert.match(spoke[0]!, /could not email/i);
   assert.match(spoke[0]!, /stopped trying/);
 });
 
@@ -207,8 +208,8 @@ test('🔴 a book whose bytes are NOT a book is discarded and REPORTED, never ma
   });
 
   assert.equal(mailed.length, 0, 'an executable must never reach a Kindle');
-  assert.match(spoke[0]!, /WINDOWS EXECUTABLE/);
-  assert.match(spoke[0]!, /could not send/i);
+  assert.match(spoke[0]!, /not a book/);
+  assert.match(spoke[0]!, /stopped trying/);
 });
 
 test('🔴 a stored option with NO source still works — the durable-file migration', async () => {

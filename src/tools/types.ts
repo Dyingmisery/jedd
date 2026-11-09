@@ -141,7 +141,7 @@ export interface Tool {
    * in order to avoid a partial one — over-gating, which is the same harm as
    * under-gating pointed the other way. They declare nothing, deliberately.
    */
-  needsServices?: ('sonarr' | 'radarr' | 'prowlarr' | 'jellyfin' | 'qbittorrent' | 'dispatcharr' | 'audiobookshelf')[];
+  needsServices?: ('sonarr' | 'radarr' | 'prowlarr' | 'jellyfin' | 'qbittorrent' | 'dispatcharr' | 'audiobookshelf' | 'plex')[];
   /**
    * Services of which AT LEAST ONE must exist — the any-of counterpart to
    * `needsServices`.
