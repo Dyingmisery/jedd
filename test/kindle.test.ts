@@ -107,7 +107,7 @@ test('🔴 the TOOL refuses a fabricated address even though it is well-formed',
     { address: 'readerfour@kindle.com' },
     {
       role: 'guest',
-      senderHandle: OTHER,
+      senderHandle: JEFF,
       config: testConfig({ readOnly: false }),
       kindle: reg,
       userTurns: ['Can you get Way of Kings on my kindle?'],
@@ -115,7 +115,7 @@ test('🔴 the TOOL refuses a fabricated address even though it is well-formed',
   );
   assert.equal(r.ok, false);
   assert.match(r.content, /does not appear in anything this person typed/i);
-  assert.equal(reg.get(OTHER), undefined);
+  assert.equal(reg.get(JEFF), undefined);
 });
 
 test('CONTROL: the tool stores an address the person did type', async () => {
@@ -126,7 +126,7 @@ test('CONTROL: the tool stores an address the person did type', async () => {
     { address: 'ReaderTwo@kindle.com' },
     {
       role: 'guest',
-      senderHandle: OTHER,
+      senderHandle: JEFF,
       config: testConfig({ readOnly: false }),
       kindle: reg,
       userTurns: ['my kindle is ReaderTwo@kindle.com'],
@@ -170,7 +170,7 @@ test('🔴 EVERY tool that accepts a delivery address REFUSES one nobody typed',
         { [key]: key === 'recipient' ? '+18015559999' : 'ReaderTwo@kindle.com' },
         {
           role: 'owner',
-          senderHandle: OTHER,
+          senderHandle: JEFF,
           // 🔴 Writes ENABLED. With writes off every tool here refuses for the
           // wrong reason, and a refusal that is not about provenance would let
           // this test pass on a tool that has no provenance check at all.

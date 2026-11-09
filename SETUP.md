@@ -54,6 +54,17 @@ guessing is that it answers everyone who has ever messaged that Mac.
   Start here.
 - `JEDD_SEND_TO=everyone` — anyone who texts it. Only once you trust it.
 
+### A second person requesting ebooks
+
+`JEDD_KINDLE_SENDERS` is a comma-separated list of handles, besides
+`OWNER_HANDLE`, who may search and request an ebook. Leave it empty and only
+the owner can. A listed person stays a guest: they do not get shell, Docker,
+indexer, or qBittorrent access, and they cannot set or change the Kindle
+address. The file is emailed to the address the owner already saved. They must
+also be allowed to receive a reply. If `JEDD_SEND_TO` is a list rather than
+`everyone`, add the same handle there too. Compose passes this through
+`env_file: .env`. The process reads it at startup.
+
 ### ⚠️ `localhost` will not work from inside the container
 
 The single most common first-run failure. In a container, `localhost` means

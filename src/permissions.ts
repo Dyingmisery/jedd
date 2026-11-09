@@ -77,6 +77,28 @@ export function roleFor(senderHandle: string, config: Config): Role {
   return sender === owner ? 'owner' : 'guest';
 }
 
+/** Same person, after the handle normalisation above. Empty handles never match. */
+export function sameHandle(a: string, b: string): boolean {
+  const left = normaliseHandle(a);
+  const right = normaliseHandle(b);
+  return left.length > 0 && left === right;
+}
+
+/**
+ * Who may search, download, and email an ebook.
+ *
+ * The owner always may. A guest may only when their handle is listed in
+ * `JEDD_KINDLE_SENDERS`. Everyone else is refused. This is not an admin grant
+ * and it does not change who may be texted (`JEDD_SEND_TO`).
+ *
+ * `onlySendTo`, when set, is a stricter test seam and still wins.
+ */
+export function mayRequestKindle(senderHandle: string, config: Config, onlySendTo?: string): boolean {
+  if (onlySendTo && !sameHandle(senderHandle, onlySendTo)) return false;
+  if (sameHandle(senderHandle, config.ownerHandle)) return true;
+  return config.kindleSenders.some((handle) => sameHandle(senderHandle, handle));
+}
+
 export function roleSatisfies(actual: Role, required: Role): boolean {
   if (required === 'guest') return true;
   return actual === 'owner';

@@ -313,16 +313,12 @@ async function main(): Promise<void> {
     verifySent: (to: string, text: string) => client.recentlySent(to, text),
   };
   /**
-   * ⚠️ `send_ebook` IS RESTRICTED TO THE OWNER IN THIS BUILD.
-   *
-   * It is `minRole: 'guest'` by declaration and the address it mails is
-   * provenance-verified per sender, so widening it is one line — delete
-   * `onlySendTo`. It is narrow here because the path has had exactly ONE live
-   * send ever, and this is its first exposure to real household traffic. A guest
-   * who asks gets a visible refusal naming the restriction, which is the safe
-   * direction: annoying beats an unrecallable email.
+   * Ebook senders are the owner plus `JEDD_KINDLE_SENDERS`. The check lives in
+   * the tools and in `deliverEbook`, so a follow-up uses the same list. This
+   * does not widen `JEDD_SEND_TO`, and the recipient stays the owner's saved
+   * Kindle address.
    */
-  const ebook = { send: await realMailSender(config), onlySendTo: config.ownerHandle };
+  const ebook = { send: await realMailSender(config) };
 
   /**
    * Reads Amazon's refusal notices out of the sending account.
@@ -547,7 +543,6 @@ async function main(): Promise<void> {
     // `blind` rather than silence — see `runKindleVerify`.
     ...(mailbox ? { mailbox } : {}),
     mounts: DEFAULT_MOUNTS,
-    onlySendTo: ebook.onlySendTo,
     ...(irc ? { irc } : {}),
     ...(plexFromConfig(config.plex) ? { plex: plexFromConfig(config.plex)! } : {}),
   };

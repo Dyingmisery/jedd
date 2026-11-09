@@ -13,6 +13,12 @@ export interface Config {
   /** Messaging handle of the single homelab owner. Everyone else is a guest. */
   ownerHandle: string;
   /**
+   * Extra handles who may request an ebook. They are still guests. The book
+   * goes to the owner's saved Kindle address, not to an address they supply.
+   * Empty means only the owner. This does not widen `JEDD_SEND_TO`.
+   */
+  kindleSenders: string[];
+  /**
    * 🔴 TWO ssh identities, and the separation IS the security boundary.
    *
    * `shellSshHost` is used by the free-form `hp_shell` tool and must be an
@@ -515,6 +521,10 @@ export function loadConfig(): Config {
   const turnTimeoutMs = parseTurnTimeout(process.env.LLM_TURN_TIMEOUT_MS);
   return {
     ownerHandle: required('OWNER_HANDLE'),
+    kindleSenders: (process.env.JEDD_KINDLE_SENDERS ?? '')
+      .split(',')
+      .map((handle) => handle.trim())
+      .filter((handle) => handle.length > 0),
     shellSshHost,
     adminSshHost,
     shellIdentityShared: shellSshHost === adminSshHost,

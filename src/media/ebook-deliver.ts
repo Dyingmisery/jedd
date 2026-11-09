@@ -2,6 +2,7 @@ import type { Config } from '../config.js';
 import type { EbookDeliverSubject } from '../followups.js';
 import type { ExecImpl } from '../hp.js';
 import type { KindleRegistry } from '../kindle.js';
+import { mayRequestKindle, sameHandle } from '../permissions.js';
 import { validateEbookBytes } from './ebook-validate.js';
 import { fetchFileFromHp, resolveBookPath } from './fetch-file.js';
 import { grabStatus, toHostPath, type MountMap } from './grab.js';
@@ -129,20 +130,23 @@ export async function deliverEbook(
    * registry, keyed by the person asking — never from a parameter, and never
    * from a record written minutes or hours ago that may since have changed.
    */
-  if (deps.onlySendTo && senderHandle !== deps.onlySendTo) {
+  if (!mayRequestKindle(senderHandle, deps.config, deps.onlySendTo)) {
     return {
       state: 'failed',
-      detail: `this build only sends books to ${deps.onlySendTo}. Nothing was sent.`,
+      detail: 'ebook sending is not enabled for this sender. Nothing was sent.',
     };
   }
 
-  const record = deps.kindle.get(senderHandle);
+  // The recipient is the address the owner already saved. A guest does not
+  // get their own, and cannot name a different one.
+  const record = deps.kindle.get(deps.config.ownerHandle);
   if (!record) {
     return {
       state: 'failed',
-      detail:
-        'I do not have a Send-to-Kindle address saved for you, so I could not send it. ' +
-        'Tell me your @kindle.com address and I will finish this.',
+      detail: sameHandle(senderHandle, deps.config.ownerHandle)
+        ? 'I do not have a Send-to-Kindle address saved for you, so I could not send it. ' +
+          'Tell me your @kindle.com address and I will finish this.'
+        : 'No Kindle address is configured. Nothing was sent.',
     };
   }
 

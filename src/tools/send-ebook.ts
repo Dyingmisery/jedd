@@ -12,6 +12,7 @@ import { resolveMagnet, type FetchImpl } from '../media/prowlarr.js';
 import { SabnzbdClient } from '../media/sabnzbd.js';
 import type { IrcEbooks } from '../media/irc-ebooks.js';
 import type { MailSender } from '../media/kindle-send.js';
+import { mayRequestKindle, sameHandle } from '../permissions.js';
 import { fail, ok, type Tool, type ToolContext, type ToolResult } from './types.js';
 
 /**
@@ -66,11 +67,10 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
   return {
     name: 'send_ebook',
     description:
-      'Grab the book the person CHOSE from the numbered list search_ebook returned and send it to ' +
-      'their Kindle. Pass the number they picked. Do not call this until they have actually said ' +
-      'which one — a book search returns different works, not different copies of one book. You do ' +
-      'not supply an address — theirs is already stored, and if it is not, ask them for it and save ' +
-      'it first.',
+      'Grab the book the person CHOSE from the numbered list search_ebook returned and email it to ' +
+      'the already configured Kindle address. Pass the number they picked. Do not call this until ' +
+      'they have actually said which one. You do not supply an address, and you do not ask a guest ' +
+      'for one. If this sender is not allowed, say so and stop.',
     minRole: 'guest',
     writes: true,
     consumesChoiceKind: 'ebook-release',
@@ -104,17 +104,22 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
       if (!ctx.choices) return fail('No option store is available.');
       if (!ctx.kindle) return fail('No address store is available.');
 
-      // ── who it goes to, decided before anything is done ──────────────────
-      const record = ctx.kindle.get(ctx.senderHandle);
-      if (!record) {
-        return fail(
-          'NO ADDRESS — nothing was grabbed. Ask them for their @kindle.com address and save it ' +
-            'first; do not guess one.',
-        );
-      }
-      if (deps.onlySendTo && ctx.senderHandle !== deps.onlySendTo) {
+      // ── who may ask, and where it goes, decided before anything is grabbed ─
+      if (deps.onlySendTo && !sameHandle(ctx.senderHandle, deps.onlySendTo)) {
         return fail(
           `RESTRICTED — this build only sends to ${deps.onlySendTo}. Nothing was grabbed or sent.`,
+        );
+      }
+      if (!mayRequestKindle(ctx.senderHandle, ctx.config)) {
+        return fail('REFUSED — ebook sending is not enabled for this sender. Nothing was grabbed or sent.');
+      }
+      const record = ctx.kindle.get(ctx.config.ownerHandle);
+      if (!record) {
+        return fail(
+          sameHandle(ctx.senderHandle, ctx.config.ownerHandle)
+            ? 'NO ADDRESS — nothing was grabbed. Ask them for their @kindle.com address and save it ' +
+              'first; do not guess one.'
+            : 'NO ADDRESS — the configured Kindle recipient is not set. Nothing was grabbed. Do not ask this person for an address.',
         );
       }
 

@@ -26,6 +26,7 @@ import {
 } from '../media/book-work.js';
 import { describeWork, OpenLibraryClient, type OpenLibraryOptions } from '../media/openlibrary.js';
 import { resolveOfKind } from '../choices.js';
+import { mayRequestKindle } from '../permissions.js';
 import { fail, ok, type Tool } from './types.js';
 
 /** Bounded: each attempt is a request against a client that warns about hammering. */
@@ -213,6 +214,9 @@ function makeReleaseSearch(
     async run(args, ctx) {
       const query = typeof args['query'] === 'string' ? args['query'].trim() : '';
       if (!query) return fail(`No search terms. Ask which ${medium} they want.`);
+      if (!isAudio && !mayRequestKindle(ctx.senderHandle, ctx.config)) {
+        return fail('REFUSED — ebook search is not enabled for this sender. Nothing was searched.');
+      }
 
       const hasIrc = !isAudio && !!irc;
       if (!ctx.config.prowlarr.apiKey && !hasIrc) {

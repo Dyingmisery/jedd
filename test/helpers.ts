@@ -22,6 +22,7 @@ import type { Config } from '../src/config.js';
 export function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     ownerHandle: '+18015550123',
+    kindleSenders: [],
     shellSshHost: 'shell-host.invalid',
     adminSshHost: 'admin-host.invalid',
     shellIdentityShared: false,
