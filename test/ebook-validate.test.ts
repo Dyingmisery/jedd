@@ -76,29 +76,24 @@ test('🔴 .mobi is REFUSED even though the bytes are a genuine Mobipocket file'
   assert.match(v.detail, /never arrive|silently/i);
 });
 
-test('a genuine AZW3 validates', () => {
+test('an AZW3 is not an EPUB and is not mailed', () => {
   const azw3 = Buffer.concat([Buffer.alloc(60, 0), Buffer.from('BOOKMOBI', 'latin1'), Buffer.alloc(2000, 0)]);
   const v = validateEbookBytes('Project Hail Mary.azw3', azw3);
-  assert.equal(v.state, 'ok');
-  if (v.state === 'ok') assert.equal(v.format, 'azw3');
-});
-
-test('an .azw3 with no Mobipocket signature is refused', () => {
-  const v = validateEbookBytes('x.azw3', Buffer.alloc(3000, 0x41));
   assert.equal(v.state, 'rejected');
-  assert.match(v.detail, /no Mobipocket signature/);
+  assert.match(v.detail, /not an EPUB/);
 });
 
-test('a genuine PDF validates and a fake one does not', () => {
+test('a PDF is not an EPUB and is not mailed', () => {
   const pdf = Buffer.concat([Buffer.from('%PDF-1.7\n', 'latin1'), Buffer.alloc(2000, 0x41)]);
-  assert.equal(validateEbookBytes('a.pdf', pdf).state, 'ok');
-  assert.equal(validateEbookBytes('a.pdf', Buffer.alloc(2000, 0x41)).state, 'rejected');
+  const v = validateEbookBytes('a.pdf', pdf);
+  assert.equal(v.state, 'rejected');
+  assert.match(v.detail, /not an EPUB/);
 });
 
 test('an unknown extension is refused rather than attempted', () => {
   const v = validateEbookBytes('book.rar', Buffer.from('526172211a0700', 'hex'));
   assert.equal(v.state, 'rejected');
-  assert.match(v.detail, /not a format the Kindle accepts/);
+  assert.match(v.detail, /not an EPUB/);
 });
 
 test('zero bytes is refused', () => {

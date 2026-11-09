@@ -4,9 +4,11 @@ import {
   bookCouldNotAdd,
   bookEmailed,
   bookFailureLine,
+  bookNoEpub,
   bookRequestAdded,
   deliverEbook,
 } from '../media/ebook-deliver.js';
+import { isEpubClaim } from '../media/ebook-validate.js';
 import { grabTorrent, type MountMap } from '../media/grab.js';
 import { resolveMagnet, type FetchImpl } from '../media/prowlarr.js';
 import { SabnzbdClient } from '../media/sabnzbd.js';
@@ -149,27 +151,13 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
        * option in the list is then genuinely the same book. Restore it there —
        * not before.
        */
-      if (isMobi(String(option.value['title'] ?? option.label))) {
-        /**
-         * ⚠️ ANY FORMAT AMAZON ACCEPTS, not `.epub` or nothing. `ebook-validate.ts`
-         * passes `epub`, `azw3` and `pdf`, so the alternatives OFFERED are all
-         * three — naming only EPUBs would hide a book that would have arrived
-         * perfectly well.
-         */
-        const usable = picked.choice.options.filter(
-          (o) => o.n !== option.n && /\.(epub|azw3|pdf)\b/i.test(String(o.value['title'] ?? o.label)),
-        );
-        return fail(
-          `REFUSED — option ${option.n} is a .mobi. Amazon stopped accepting that format in 2022 ` +
-            'and rejects it SILENTLY, so it would look sent and never arrive. Nothing was fetched ' +
-            'and NOTHING WAS SUBSTITUTED — the other options may be different books, so do not ' +
-            'quietly send one of them.' +
-            (usable.length
-              ? ` Tell them that one will not work and ask whether one of these is the same book: ` +
-                `${usable.map((o) => `${o.n}. ${o.label}`).join('; ')}.`
-              : ' Nothing else that was found is a format Amazon accepts either — say so and offer ' +
-                'to search again.'),
-        );
+      const pickedTitle = String(option.value['title'] ?? option.label);
+      if (!isEpubClaim(pickedTitle)) {
+        const reply = bookNoEpub(pickedTitle);
+        return {
+          ...fail(`REFUSED — ${reply} Nothing was fetched and NOTHING WAS SUBSTITUTED.`),
+          verbatimReply: reply,
+        };
       }
 
       const value = option.value;
@@ -392,9 +380,4 @@ async function submitUsenet(
     ),
     verbatimReply: bookRequestAdded(title),
   };
-}
-
-/** Amazon has rejected `.mobi` since 2022, and does it silently. */
-function isMobi(title: string): boolean {
-  return /\.mobi\b/i.test(title);
 }

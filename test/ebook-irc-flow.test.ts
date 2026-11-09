@@ -286,10 +286,8 @@ test('🔴 a .mobi is never fetched, and NOTHING IS SUBSTITUTED FOR IT', async (
   assert.equal(r.ok, false, r.content);
   assert.match(r.content, /^REFUSED/);
   assert.match(r.content, /NOTHING WAS SUBSTITUTED/);
-  assert.match(r.content, /rejects it SILENTLY/);
-  // The Kindle-compatible options are NAMED so the model can ask about them —
-  // refusing without saying what else there was is a dead end, not a re-ask.
-  assert.match(r.content, /2\. Some Other Book\.epub/);
+  assert.equal(r.verbatimReply, "I couldn't find an EPUB of Andy Weir - PHM.mobi.");
+  assert.doesNotMatch(r.content, /2\. Some Other Book\.epub/);
 
   assert.equal(irc.calls.length, 0, 'nothing is fetched inside the turn, .mobi or otherwise');
   assert.equal(sent.length, 0, 'and nothing is sent');
@@ -336,9 +334,8 @@ test('CONTROL: with NO Kindle-compatible option anywhere, the refusal names no a
   });
   assert.equal(r.ok, false);
   assert.match(r.content, /^REFUSED/);
-  assert.match(r.content, /2022/);
-  assert.match(r.content, /offer to search again/);
-  assert.doesNotMatch(r.content, /2\. Andy Weir - PHM\.rar/, 'a .rar is not a Kindle format to offer');
+  assert.equal(r.verbatimReply, "I couldn't find an EPUB of Andy Weir - PHM.mobi.");
+  assert.doesNotMatch(r.content, /2\. Andy Weir - PHM\.rar/, 'a .rar is not offered instead');
   assert.equal(irc.calls.length, 0, 'nothing may be fetched');
   assert.equal(sent.length, 0);
 });

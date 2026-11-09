@@ -374,23 +374,19 @@ test('CONTROL: with the swarms level, unabridged wins — the quality key still 
 
 // ── 🔴 THE EBOOK PATH, WHICH HAD A SECOND COMPARATOR HIDING UNDER THE FIRST ──
 
-test('🔴 EBOOK: a 500-seeder .azw3 beats a 1-seeder .epub', async () => {
-  /**
-   * This shipped WRONG for a day and the review caught it. The ranker ran, and
-   * then `interleave` re-sorted the whole merged list on `isEpub` with no swarm
-   * term — and `interleave`'s output is what gets grabbed. So the tool chose the
-   * 1-seeder release **while printing "leading on swarm health"**. Ranking and
-   * then re-ranking is how a first key stops being first.
-   */
-  const r = await makeSearchEbook(async () =>
-    json([
+test('🔴 EBOOK: a 500-seeder .azw3 is not chosen over a 1-seeder .epub', async () => {
+  const queries: string[] = [];
+  const r = await makeSearchEbook(async (url) => {
+    queries.push(String(url));
+    return json([
       prowlarrRelease({ title: 'Dune.epub', infoHash: HASH_A, seeders: 1 }),
       prowlarrRelease({ title: 'Dune.azw3', infoHash: HASH_B, seeders: 500 }),
-    ]),
-  ).run({ query: 'Dune' }, ctx());
+    ]);
+  }).run({ query: 'Dune' }, ctx());
+  assert.ok(queries.some((u) => u.includes('categories=7020')));
   assert.equal(r.ok, true);
-  assert.match(optionLine(r.content, 1), /Dune\.azw3/);
-  assert.match(optionLine(r.content, 2), /Dune\.epub/, 'format is a key UNDER the band, not above it');
+  assert.match(optionLine(r.content, 1), /Dune\.epub/);
+  assert.doesNotMatch(r.content, /Dune\.azw3/);
 });
 
 test('CONTROL: with the swarms level, the .epub wins — format still decides', async () => {
@@ -401,20 +397,19 @@ test('CONTROL: with the swarms level, the .epub wins — format still decides', 
     ]),
   ).run({ query: 'Dune' }, ctx());
   assert.match(optionLine(r.content, 1), /Dune\.epub/);
+  assert.doesNotMatch(r.content, /Dune\.azw3/);
 });
 
-test('🔴 EBOOK: an archive does not outrank a real book on seeders alone', async () => {
-  // Choosing something that IS a book used to happen when the model read the
-  // list. `.rar` and `.epub` were the same bucket the moment the key was
-  // epub-or-not, so a 90-seeder pack beat an 8-seeder azw3.
+test('🔴 EBOOK: an archive or another format is not an EPUB offer', async () => {
   const r = await makeSearchEbook(async () =>
     json([
       prowlarrRelease({ title: 'Dune.Complete.Series.rar', infoHash: HASH_A, seeders: 90 }),
       prowlarrRelease({ title: 'Dune.azw3', infoHash: HASH_B, seeders: 8 }),
     ]),
   ).run({ query: 'Dune' }, ctx());
-  assert.match(optionLine(r.content, 1), /Dune\.azw3/);
-  assert.match(optionLine(r.content, 2), /\.rar/, 'the archive is ranked below a real book, not above it');
+  assert.equal(r.verbatimReply, "I couldn't find an EPUB of Dune.");
+  assert.doesNotMatch(r.content, /Dune\.azw3/);
+  assert.doesNotMatch(r.content, /\.rar/);
 });
 
 test('🔴 an IRC offer outranks a THIN torrent — a DCC transfer has no swarm to be dead', async () => {
@@ -633,9 +628,10 @@ test('🔴 IRC "no matches" reaches the model as an ABSENCE, not as a bot that w
   );
 
   assert.equal(r.ok, true);
-  // 🪦 This used to assert `/NONE/`. Same contract, renamed head: see the
-  // tombstone in `search-release.test.ts` on the NONE -> NOT FOUND rename.
-  assert.match(r.content, /NOT FOUND/, 'both sources were read and both are empty');
+  assert.equal(
+    r.verbatimReply,
+    "I couldn't find an EPUB of Vengeance Is Mine Richard E. Turley.",
+  );
   assert.match(r.content, /no matches/i, "the bot's own finding must survive the merge");
   assert.doesNotMatch(
     r.content,

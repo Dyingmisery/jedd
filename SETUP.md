@@ -166,7 +166,7 @@ is required for that. A missing poster does not cancel the request.
 
 Asking whether a title is on Plex is a separate read. It uses the same `PLEX_URL` and `PLEX_TOKEN`, looks the title up in Radarr or Sonarr, and checks Plex for that id and a media file. It does not add or download anything. Jellyfin answers stay on the library search. If Plex is not configured, Jedd says it cannot check. It does not invent an answer.
 
-A book request says "Your request for Title has been added." only after the download is accepted. Checks while it downloads stay silent. After the mail server accepts the file, the text is "Title has been emailed to your Kindle address." That is not a claim the Kindle device has it. A failure or the end of the wait is one short line.
+Ebook search only offers an EPUB. A PDF, AZW3, MOBI, comic, or audiobook is not chosen and is not converted. If none is found, or the download has no EPUB, the reply is "I couldn't find an EPUB of Title." A book request says "Your request for Title has been added." only after the download is accepted. Checks while it downloads stay silent. After the mail server accepts the file, the text is "Title has been emailed to your Kindle address." That is not a claim the Kindle device has it. A failure or the end of the wait is one short line.
 
 ### 🔴 If you set the two SSH variables, make them different accounts
 

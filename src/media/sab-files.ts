@@ -19,8 +19,8 @@ export const MAX_EBOOK_BYTES = 25 * 1024 * 1024;
 const MAX_WALK_DEPTH = 6;
 const MAX_WALK_ENTRIES = 400;
 
-/** Kindle formats this pipeline will consider, best first. `.mobi` is not here. */
-const BOOK_EXTENSIONS = ['.epub', '.pdf', '.azw3'] as const;
+/** Only an EPUB is mailed. Other files in the same folder are ignored. */
+const BOOK_EXTENSIONS = ['.epub'] as const;
 
 export type LocatedBook =
   | { state: 'ok'; filename: string; bytes: Buffer }
@@ -113,7 +113,7 @@ export async function readContainedBook(input: {
     return {
       state: 'absent',
       detail:
-        'the completed folder has no .epub, .pdf, or .azw3. An NZB, an audiobook, or an empty unpack was not mailed.',
+        'the completed folder has no .epub. It is not an EPUB. An NZB, a PDF, an audiobook, or an empty unpack was not mailed.',
     };
   }
   found.sort((a, b) => BOOK_EXTENSIONS.indexOf(a.ext) - BOOK_EXTENSIONS.indexOf(b.ext) || b.size - a.size);

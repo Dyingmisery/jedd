@@ -337,6 +337,17 @@ test('a contained epub is read, and an NZB or audiobook is not', async () => {
     localDir: onlyAudio,
   });
   assert.equal(skipped.state, 'absent');
+  assert.match(skipped.state === 'absent' ? skipped.detail : '', /not an EPUB/);
+
+  const onlyPdf = temp();
+  writeFileSync(join(onlyPdf, 'Dune.pdf'), Buffer.from('%PDF-1.7'));
+  const pdf = await readContainedBook({
+    storage: '/library/ebooks',
+    storagePrefix: '/library/ebooks',
+    localDir: onlyPdf,
+  });
+  assert.equal(pdf.state, 'absent');
+  assert.match(pdf.state === 'absent' ? pdf.detail : '', /not an EPUB/);
 });
 
 test('a symlink that leaves the mount is not read', async () => {

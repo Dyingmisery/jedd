@@ -50,11 +50,16 @@ export function bookStoppedWaiting(title: string): string {
   return `I stopped waiting for ${title}. It has not been emailed.`;
 }
 
+export function bookNoEpub(title: string): string {
+  return `I couldn't find an EPUB of ${title}.`;
+}
+
 export function bookFailureLine(title: string, detail: string): string {
   if (/Send-to-Kindle address/i.test(detail)) return detail;
   if (/may already have gone/i.test(detail)) {
     return `I could not tell whether ${title} was emailed. I have not tried again, because it may already have gone.`;
   }
+  if (/not an EPUB/i.test(detail)) return bookNoEpub(title);
   if (/WINDOWS EXECUTABLE/i.test(detail)) {
     return `I could not email ${title}. The file was not a book. Nothing was sent. I have stopped trying.`;
   }

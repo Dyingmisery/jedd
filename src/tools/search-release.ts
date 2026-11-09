@@ -26,6 +26,8 @@ import {
 } from '../media/book-work.js';
 import { describeWork, OpenLibraryClient, type OpenLibraryOptions } from '../media/openlibrary.js';
 import { resolveOfKind } from '../choices.js';
+import { bookNoEpub } from '../media/ebook-deliver.js';
+import { isEpubClaim } from '../media/ebook-validate.js';
 import { mayRequestKindle } from '../permissions.js';
 import { fail, ok, type Tool } from './types.js';
 
@@ -519,6 +521,8 @@ function makeReleaseSearch(
           );
           break;
         }
+        // 7020 is the ebook bucket. This client has no EPUB-only category, so
+        // non-EPUB rows are dropped after the search rather than requested.
         const result: SearchResult = await client.search(
           rung.term,
           isAudio ? CATEGORY.audiobook : CATEGORY.ebook,
@@ -574,7 +578,9 @@ function makeReleaseSearch(
       let ircNote = '';
       if (hasIrc) {
         if (ircFound.state === 'ok') {
-          ircOffers = ircFound.results.map((r) => ircOffer(r, work));
+          ircOffers = ircFound.results
+            .filter((r) => isAudio || isEpubClaim(r.title))
+            .map((r) => ircOffer(r, work));
           if (ircFound.detail) ircNote = `IRC ${ircFound.detail}`;
         } else {
           // 'none' and 'unknown' are both reported, never treated as "no books".
@@ -618,6 +624,13 @@ function makeReleaseSearch(
        * search that missed and NOT a book that is absent.
        */
       if (found.state === 'none' && ircOffers.length === 0) {
+        if (!isAudio && attempts.some((a) => a.searched)) {
+          const reply = bookNoEpub(work ? describeWork(work) : query);
+          return {
+            ...ok(`NO EPUB — ${reply}${ircNote ? ` (${ircNote})` : ''}`),
+            verbatimReply: reply,
+          };
+        }
         return ok(
           `NOT FOUND — I asked the indexers ${attempts.length} different way(s) about this and none ` +
             // 🔴 THE INDEXER'S OWN DETAIL SURVIVES. It is what separates "nothing
@@ -653,6 +666,11 @@ function makeReleaseSearch(
       }
 
       const merged = mergeSources(best.offers, ircOffers);
+
+      if (!isAudio && merged.length === 0 && best.deadCount === 0 && best.usenetSkipped === 0) {
+        const reply = bookNoEpub(work ? describeWork(work) : query);
+        return { ...ok(`NO EPUB — ${reply}`), verbatimReply: reply };
+      }
 
       /**
        * ═══ STAGE TWO: WHICH COPY ═══════════════════════════════════════════
@@ -1017,6 +1035,7 @@ function evaluate(
 ): Attempt {
   const all = found.state === 'results' ? found.releases : [];
   const releases = o.isAudio ? all.filter((r) => isGraphicAudio(r) === o.wantsGraphic) : all;
+  const claimed = o.isAudio ? releases : releases.filter((r) => isEpubClaim(r.title));
   /**
    * 🔴 A DEAD TORRENT IS NEVER A CANDIDATE NOW THAT NOBODY IS ASKED.
    *
@@ -1033,8 +1052,8 @@ function evaluate(
    * cannot fetch it, and that withholding is counted separately from the dead
    * swarm so the two are not reported as the same fact.
    */
-  const torrents = releases.filter((r) => r.protocol !== 'usenet');
-  const usenet = releases.filter((r) => r.protocol === 'usenet');
+  const torrents = claimed.filter((r) => r.protocol !== 'usenet');
+  const usenet = claimed.filter((r) => r.protocol === 'usenet');
   const alive = torrents.filter((r) => swarmHealth(r.seeders) !== 'dead');
   const usable = o.takeUsenet ? [...alive, ...usenet] : alive;
   const usenetSkipped = o.takeUsenet ? 0 : usenet.length;
@@ -1174,9 +1193,7 @@ interface Offer {
  * re-chooses away from one anyway.
  */
 function formatScore(title: string): number {
-  if (/\.epub\b/i.test(title)) return 2;
-  if (/\.(azw3|pdf)\b/i.test(title)) return 1;
-  return 0;
+  return isEpubClaim(title) ? 2 : 0;
 }
 
 function ircOffer(r: IrcResult, work?: Work): Offer {
@@ -1217,7 +1234,7 @@ function ircOffer(r: IrcResult, work?: Work): Offer {
 function ircHolds(outcome: IrcSearchOutcome, work?: Work): boolean {
   if (outcome.state !== 'ok') return false;
   return outcome.results.some(
-    (r) => !work || ircOffer(r, work).work !== WORK_MATCH.NOT_THIS_WORK,
+    (r) => isEpubClaim(r.title) && (!work || ircOffer(r, work).work !== WORK_MATCH.NOT_THIS_WORK),
   );
 }
 
