@@ -5,6 +5,7 @@ import { proveShellIdentityIsSafe } from './identity-probe.js';
 import { StdoutConnector, withPresence } from './connector.js';
 import { FollowupStore } from './followups.js';
 import { runDueFollowups } from './followup-runner.js';
+import { plexFromConfig } from './media/plex.js';
 import { imapMailboxReader, imapSettingsFrom } from './kindle-mailbox.js';
 import { createLlmClient } from './llm.js';
 import { ChoiceStore } from './choices.js';
@@ -64,26 +65,33 @@ async function main(): Promise<void> {
     `followups: ${followups.all().filter((f) => f.status === 'pending').length} pending` +
       `${pending ? ` (${pending} already due)` : ''}, checked every ${TICK_MS / 1000}s`,
   );
+  const report = (outcomes: Awaited<ReturnType<typeof runDueFollowups>>) => {
+    for (const o of outcomes) {
+      console.error(`  [followup] ${o.id} ${o.action}${o.sent ? ' (sent)' : ''} — ${o.detail}`);
+    }
+  };
+  const followupDeps = {
+    config,
+    send: (to: string, text: string) => connector.send(to, text),
+    /**
+     * 🔴 THE SAME LOG FILE AS THE DAEMON, SO THIS TICK MUST NOT BE BLIND.
+     *
+     * This entry point ticks `data/followups.jsonl` — the daemon's store. A
+     * `kindle-verify` record the daemon scheduled can come due here. Without a
+     * reader this run would defer it (and eventually give up on it) for a
+     * reason that is purely about which process happened to pick it up.
+     */
+    ...(mailbox ? { mailbox } : {}),
+    ...(plexFromConfig(config.plex) ? { plex: plexFromConfig(config.plex) } : {}),
+  };
   const timer = setInterval(() => {
-    void runDueFollowups(followups, {
-      config,
-      send: (to, text) => connector.send(to, text),
-      /**
-       * 🔴 THE SAME LOG FILE AS THE DAEMON, SO THIS TICK MUST NOT BE BLIND.
-       *
-       * This entry point ticks `data/followups.jsonl` — the daemon's store. A
-       * `kindle-verify` record the daemon scheduled can come due here. Without a
-       * reader this run would defer it (and eventually give up on it) for a
-       * reason that is purely about which process happened to pick it up.
-       */
-      ...(mailbox ? { mailbox } : {}),
-    }).then((outcomes) => {
-      for (const o of outcomes) {
-        console.error(`  [followup] ${o.id} ${o.action}${o.sent ? ' (sent)' : ''} — ${o.detail}`);
-      }
-    });
+    void runDueFollowups(followups, followupDeps).then(report);
   }, TICK_MS);
   timer.unref();
+  const ebookTimer = setInterval(() => {
+    void runDueFollowups(followups, followupDeps, { kind: 'ebook-deliver' }).then(report);
+  }, config.ebookRecheckMs);
+  ebookTimer.unref();
 
   // ⚠️ The same presence calls the live path makes, so the terminal exercises
   // the whole shape rather than a shorter one. On `StdoutConnector` they are a

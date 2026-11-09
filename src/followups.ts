@@ -53,6 +53,8 @@ export interface MediaAddSubject {
   /** tvdbId for a series, tmdbId for a movie — never the internal row id. */
   id: number;
   title: string;
+  /** Release year, when the catalogue line had one. Omitted from the text if absent. */
+  year?: number;
   /** Empty for a movie. For a series, ONLY the seasons actually requested. */
   seasons: number[];
 }
@@ -82,13 +84,18 @@ export interface MediaAddSubject {
  */
 export interface EbookDeliverSubject {
   /** Which fetcher completes this. The model never supplies it. */
-  source: 'prowlarr' | 'irc';
+  source: 'prowlarr' | 'irc' | 'sab';
   title: string;
-  /** Prowlarr only: the torrent to watch for. */
+  /** Prowlarr torrent only: the torrent to watch for. */
   infoHash?: string;
   /** IRC only: the exact channel command, and the bot that must still be present. */
   command?: string;
   bot?: string;
+  /**
+   * SABnzbd only. Persisted on the follow-up so a restart polls this job
+   * instead of submitting the NZB again.
+   */
+  nzoId?: string;
 }
 
 /**
@@ -155,6 +162,36 @@ type LogRecord =
  * checking something forever and never telling anyone it could not finish.
  */
 export const MAX_ATTEMPTS = 4;
+
+/**
+ * How often an ebook follow-up is looked at again. Other follow-ups do not use
+ * this. The default is 30 seconds; `EBOOK_RECHECK_MS` can set 10 seconds to
+ * 10 minutes.
+ */
+export const EBOOK_RECHECK_MS_DEFAULT = 30_000;
+export const EBOOK_RECHECK_MS_MIN = 10_000;
+export const EBOOK_RECHECK_MS_MAX = 10 * 60 * 1000;
+
+/**
+ * How long an ebook may stay unfinished before the follow-up says it stopped.
+ *
+ * The old gap was 10 minutes and the shared cap is {@link MAX_ATTEMPTS}. That
+ * was described as about 40 minutes of waiting. A shorter gap must not inherit
+ * the same cap, or four looks would give up in two minutes.
+ */
+export const EBOOK_WAIT_BUDGET_MS = 40 * 60 * 1000;
+
+/**
+ * Attempt ceiling for one ebook job at this gap.
+ *
+ * `defer` stops when `attempts + 1` reaches the ceiling, so the waits that
+ * actually elapse are `ceiling - 1` gaps. That product stays at
+ * {@link EBOOK_WAIT_BUDGET_MS}.
+ */
+export function ebookAttemptCeiling(recheckMs: number): number {
+  const gap = Math.min(EBOOK_RECHECK_MS_MAX, Math.max(1, Math.round(recheckMs)));
+  return Math.max(MAX_ATTEMPTS, Math.ceil(EBOOK_WAIT_BUDGET_MS / gap) + 1);
+}
 
 export class FollowupStore {
   private readonly items = new Map<string, Followup>();
@@ -283,11 +320,16 @@ export class FollowupStore {
       .sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt));
   }
 
-  /** Push a follow-up out, counting the attempt. Returns false once exhausted. */
-  defer(id: string, until: Date, note: string, at = new Date()): boolean {
+  /**
+   * Push a follow-up out, counting the attempt. Returns false once exhausted.
+   *
+   * `maxAttempts` defaults to the shared cap. Ebook jobs pass their own ceiling
+   * so a shorter gap does not shorten the wait.
+   */
+  defer(id: string, until: Date, note: string, at = new Date(), maxAttempts = MAX_ATTEMPTS): boolean {
     const item = this.items.get(id);
     if (!item) return false;
-    if (item.attempts + 1 >= MAX_ATTEMPTS) return false;
+    if (item.attempts + 1 >= maxAttempts) return false;
     this.append({ type: 'defer', id, at: at.toISOString(), dueAt: until.toISOString(), note });
     item.dueAt = until.toISOString();
     item.attempts += 1;

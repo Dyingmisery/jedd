@@ -1,12 +1,20 @@
 import type { Config } from './config.js';
 import { ArrClient } from './media/arr.js';
-import { deliverEbook } from './media/ebook-deliver.js';
-import type { FollowupStore, Followup } from './followups.js';
+import { availabilityLine, type PlexChecker } from './media/plex.js';
+import { bookEmailed, bookFailureLine, bookStoppedWaiting, deliverEbook } from './media/ebook-deliver.js';
+import {
+  ebookAttemptCeiling,
+  MAX_ATTEMPTS,
+  type FollowupKind,
+  type FollowupStore,
+  type Followup,
+} from './followups.js';
 import type { IrcEbooks } from './media/irc-ebooks.js';
 import type { MailSender } from './media/kindle-send.js';
 import type { MailboxReader } from './kindle-mailbox.js';
 import { verifyKindleDelivery } from './kindle-verify.js';
 import type { MountMap } from './media/grab.js';
+import type { FetchImpl } from './media/sabnzbd.js';
 import type { KindleRegistry } from './kindle.js';
 import { jellyfinGet, type JellyfinResponse } from './jellyfin.js';
 import type { ExecImpl } from './hp.js';
@@ -41,12 +49,10 @@ export const RETRY_DELAY_MS = 15 * 60 * 1000;
 /** How long between checks on a media add. Downloads take hours, not minutes. */
 export const MEDIA_RECHECK_MS = 60 * 60 * 1000;
 /**
- * How long between attempts at an ebook delivery. Deliberately far shorter than
- * a media add: a book is megabytes, and an IRC bot either answers within its
- * queue or never does. With MAX_ATTEMPTS that gives roughly 40 minutes before it
- * gives up and SAYS so.
+ * Fallback only. The live gap is `config.ebookRecheckMs` (default 30s). The
+ * attempt ceiling grows with that gap so the wait stays about 40 minutes.
+ * Media, throttle, and Kindle-verify follow-ups do not use it.
  */
-export const EBOOK_RECHECK_MS = 10 * 60 * 1000;
 /**
  * How long between attempts when the delivery check cannot prove it can see.
  * Blindness is usually transient (a network blip, an IMAP hiccup), so this
@@ -70,6 +76,8 @@ export interface FollowupDeps {
   mail?: MailSender;
   irc?: IrcEbooks;
   mounts?: MountMap[];
+  /** Test seam for SABnzbd. Unset in production. */
+  sabFetch?: FetchImpl;
   /** Same live-test restriction the tool carries; see `DeliverDeps`. */
   onlySendTo?: string;
   exec?: ExecImpl;
@@ -81,6 +89,8 @@ export interface FollowupDeps {
   sleep?: (ms: number) => Promise<void>;
   jellyfin?: (config: Config, path: string) => Promise<JellyfinResponse>;
   now?: () => Date;
+  /** Absent means Plex is not configured. Never treated as "available". */
+  plex?: PlexChecker;
 }
 
 export interface FollowupOutcome {
@@ -117,15 +127,21 @@ export interface FollowupOutcome {
  */
 let running = false;
 
-/** Run every follow-up that is due. Never throws — a bad one must not stop the rest. */
+/**
+ * Run every follow-up that is due. Never throws — a bad one must not stop the rest.
+ *
+ * `kind` limits the pass to one kind. The ebook timer uses it so a faster ebook
+ * poll does not also wake media or throttle jobs.
+ */
 export async function runDueFollowups(
   store: FollowupStore,
   deps: FollowupDeps,
+  opts?: { kind?: FollowupKind },
 ): Promise<FollowupOutcome[]> {
   if (running) return [];
   running = true;
   try {
-    return await runDueFollowupsInner(store, deps);
+    return await runDueFollowupsInner(store, deps, opts?.kind);
   } finally {
     running = false;
   }
@@ -139,10 +155,12 @@ export function isFollowupRunInProgress(): boolean {
 async function runDueFollowupsInner(
   store: FollowupStore,
   deps: FollowupDeps,
+  kind?: FollowupKind,
 ): Promise<FollowupOutcome[]> {
   const now = deps.now?.() ?? new Date();
   const outcomes: FollowupOutcome[] = [];
-  for (const followup of store.due(now)) {
+  const due = store.due(now).filter((followup) => !kind || followup.kind === kind);
+  for (const followup of due) {
     try {
       outcomes.push(await runOne(followup, store, deps, now));
     } catch (e) {
@@ -398,8 +416,9 @@ async function deferOrGiveUp(
   giveUpMessage: () => Promise<boolean>,
   /** Defaults to the generic retry gap; ebook deliveries come back sooner. */
   delayMs: number = RETRY_DELAY_MS,
+  maxAttempts: number = MAX_ATTEMPTS,
 ): Promise<FollowupOutcome> {
-  const deferred = store.defer(followup.id, new Date(now.getTime() + delayMs), note, now);
+  const deferred = store.defer(followup.id, new Date(now.getTime() + delayMs), note, now, maxAttempts);
   if (deferred) {
     return { id: followup.id, action: 'deferred', sent: false, detail: note };
   }
@@ -447,25 +466,62 @@ async function runMediaAdd(
   }
   const arrConfig = subject.arr === 'series' ? deps.config.sonarr : deps.config.radarr;
   const client = new ArrClient(arrConfig, subject.arr);
+
+  if (deps.plex) {
+    const view = await deps.plex.available({
+      arr: subject.arr,
+      id: subject.id,
+      seasons: subject.seasons,
+      now,
+    });
+    if (view.state === 'ready') {
+      const sent = await speak(availabilityLine(subject.title, subject.arr, subject.seasons));
+      store.resolve(followup.id, 'done', 'on plex', now);
+      return { id: followup.id, action: 'restored', sent, detail: 'on plex' };
+    }
+    if (view.state === 'unknown') {
+      return await deferOrGiveUp(
+        followup,
+        store,
+        now,
+        `could not check Plex for "${subject.title}"`,
+        () => speak(`I couldn't confirm whether ${subject.title} is on Plex, so I have stopped checking.`),
+        MEDIA_RECHECK_MS,
+      );
+    }
+    // not-ready falls through. An arr import is not availability.
+  }
+
   const p = await client.progress(subject.id, subject.seasons);
 
   // Cannot establish the state -> defer and say so when out of deferrals. Never
   // guess, and never report "nothing arrived" when the truth is "I could not look".
   if (p.state === 'unknown') {
-    return await deferOrGiveUp(followup, store, now, `could not check on "${subject.title}": ${p.detail}`, () =>
-      speak(
-        `${why}\n\nI could not find out what happened to "${subject.title}" — ${p.detail} ` +
-          'I have stopped checking rather than leaving you waiting on a machine that cannot see. ' +
-          'Ask me and I will look again.',
-      ),
+    return await deferOrGiveUp(
+      followup,
+      store,
+      now,
+      `could not check on "${subject.title}": ${p.detail}`,
+      () => speak(`I could not check on "${subject.title}", so I have stopped.`),
+      MEDIA_RECHECK_MS,
     );
   }
 
   if (p.state === 'complete') {
+    if (deps.plex) {
+      return await deferOrGiveUp(
+        followup,
+        store,
+        now,
+        `not on plex yet: ${p.detail}`,
+        () => speak(`I stopped waiting on ${subject.title}. It is not on Plex yet.`),
+        MEDIA_RECHECK_MS,
+      );
+    }
     const sent = await speak(
-      `${why}\n\nGood news — ${p.detail}. It is ready to watch on Jellyfin.`,
+      `I cannot check Plex from here, so I will not call "${subject.title}" available.`,
     );
-    store.resolve(followup.id, 'done', `complete: ${p.detail}`, now);
+    store.resolve(followup.id, 'done', `complete, plex unchecked: ${p.detail}`, now);
     return { id: followup.id, action: 'restored', sent, detail: p.detail };
   }
 
@@ -477,8 +533,7 @@ async function runMediaAdd(
       return { id: followup.id, action: 'deferred', sent: false, detail: `partial: ${p.detail}` };
     }
     const sent = await speak(
-      `${why}\n\n${p.detail}. Some of it arrived and the rest has not, and I have stopped ` +
-        'watching for it. Ask me to try again if you still want the missing part.',
+      `${p.detail}. Some of it arrived and the rest has not, and I have stopped watching for it.`,
     );
     store.resolve(followup.id, 'abandoned', `partial at give-up: ${p.detail}`, now);
     return { id: followup.id, action: 'abandoned', sent, detail: p.detail };
@@ -491,9 +546,7 @@ async function runMediaAdd(
     return { id: followup.id, action: 'deferred', sent: false, detail: `nothing yet: ${p.detail}` };
   }
   const sent = await speak(
-    `${why}\n\n${p.detail} — nothing has downloaded, and I have stopped waiting for it. ` +
-      'That usually means no release is available rather than something being stuck. ' +
-      'It will not arrive on its own; ask me and I will look again.',
+    `${p.detail} — nothing has downloaded, and it will not arrive on its own. I have stopped waiting.`,
   );
   store.resolve(followup.id, 'abandoned', `nothing arrived: ${p.detail}`, now);
   return { id: followup.id, action: 'abandoned', sent, detail: p.detail };
@@ -529,10 +582,7 @@ async function runEbookDeliver(
   // a book was coming; a deployment gap must not become their silence.
   if (!deps.kindle || !deps.mail) {
     const detail = 'this deployment cannot send books (no address store or no mail sender)';
-    const sent = await speak(
-      `${why}\n\nI could not finish sending "${subject.title}" — ${detail}. ` +
-        'Nothing was sent, and I have stopped trying rather than leave you waiting.',
-    );
+    const sent = await speak(bookFailureLine(subject.title, detail));
     store.resolve(followup.id, 'abandoned', detail, now);
     return { id: followup.id, action: sent ? 'abandoned' : 'not-delivered', sent, detail };
   }
@@ -547,6 +597,7 @@ async function runEbookDeliver(
       ...(deps.exec ? { exec: deps.exec } : {}),
       ...(deps.irc ? { irc: deps.irc } : {}),
       ...(deps.mounts ? { mounts: deps.mounts } : {}),
+      ...(deps.sabFetch ? { sabFetch: deps.sabFetch } : {}),
       followups: store,
       ...(deps.onlySendTo ? { onlySendTo: deps.onlySendTo } : {}),
     },
@@ -554,29 +605,30 @@ async function runEbookDeliver(
   );
 
   if (r.state === 'delivered') {
-    const sent = await speak(`${why}\n\nGood news — ${r.detail}`);
+    const sent = await speak(bookEmailed(subject.title));
     store.resolve(followup.id, 'done', r.detail, now);
     return { id: followup.id, action: 'restored', sent, detail: r.detail };
   }
 
   if (r.state === 'failed') {
     // Terminal and bad. This ALWAYS speaks: a book that is never coming is
-    // precisely what the person needs to hear.
-    const sent = await speak(
-      `${why}\n\nI could not send "${subject.title}" — ${r.detail} I have stopped trying.`,
-    );
+    // precisely what the person needs to hear. One line, not a progress report.
+    const sent = await speak(bookFailureLine(subject.title, r.detail));
     store.resolve(followup.id, 'abandoned', r.detail, now);
     return { id: followup.id, action: sent ? 'abandoned' : 'not-delivered', sent, detail: r.detail };
   }
 
   // `waiting` and `unknown` both mean "no verdict yet". Defer, and when the
   // deferrals run out say plainly that we stopped — never just fall silent.
-  return await deferOrGiveUp(followup, store, now, `"${subject.title}": ${r.detail}`, () =>
-    speak(
-      `${why}\n\nI have stopped waiting for "${subject.title}" — ${r.detail} ` +
-        'It has not been sent. Ask me and I will try again.',
-    ),
-    EBOOK_RECHECK_MS,
+  const gap = deps.config.ebookRecheckMs;
+  return await deferOrGiveUp(
+    followup,
+    store,
+    now,
+    `"${subject.title}": ${r.detail}`,
+    () => speak(bookStoppedWaiting(subject.title)),
+    gap,
+    ebookAttemptCeiling(gap),
   );
 }
 

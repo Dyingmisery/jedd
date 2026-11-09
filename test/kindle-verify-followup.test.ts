@@ -245,11 +245,11 @@ async function deliverThroughRunner(mail: (m: unknown) => Promise<{ messageId?: 
   void IrcEbooks;
   const dir = mkdtempSync(join(tmpdir(), 'jedd-sched-'));
   const kindle = new KindleRegistry(join(dir, 'k.jsonl'));
-  kindle.save(GUEST, 'readerone@kindle.com', ['readerone@kindle.com']);
+  kindle.save(OWNER, 'readerone@kindle.com', ['readerone@kindle.com']);
   const s = new FollowupStore(join(dir, 'f.jsonl'));
   s.schedule({
     kind: 'ebook-deliver',
-    senderHandle: GUEST,
+    senderHandle: OWNER,
     dueAt: new Date(Date.parse(SENT_AT)),
     reason: 'started fetching "A Book.epub" for them',
     observed: 'queued a request on IRC',
@@ -282,7 +282,7 @@ test('🔴 a send that the mail server ACCEPTED schedules a delivery check', asy
   const check = s.all().find((f) => f.kind === 'kindle-verify');
   assert.ok(check, 'no check was scheduled, so a refusal would go unnoticed exactly as before');
   assert.equal(check.status, 'pending');
-  assert.equal(check.senderHandle, GUEST);
+  assert.equal(check.senderHandle, OWNER);
   assert.equal(check.verify?.filename, 'A Book.epub');
   // 🔴 The instant is taken BEFORE the SMTP hand-off, so the round trip is
   // inside the searched window rather than in front of it. `before` is read here

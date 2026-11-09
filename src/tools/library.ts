@@ -97,7 +97,7 @@ export function makeLibrarySearch(deps: LibrarySearchDeps = {}): Tool {
       'this before telling anyone whether something is available, and use the season detail when ' +
       'they ask about a show: "seasons 1-3 complete, season 4 has 6 of 10" is the answer, not "it is ' +
       'in the library". A season listed as missing and NOT monitored will never arrive on its own — ' +
-      'they have to ask for it.',
+      'they have to ask for it. This does not check Plex. A question that names Plex uses plex_availability.',
     minRole: 'guest',
     writes: false,
     parameters: {

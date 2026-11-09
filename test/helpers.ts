@@ -22,6 +22,7 @@ import type { Config } from '../src/config.js';
 export function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     ownerHandle: '+18015550123',
+    kindleSenders: [],
     shellSshHost: 'shell-host.invalid',
     adminSshHost: 'admin-host.invalid',
     shellIdentityShared: false,
@@ -41,6 +42,15 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     // ceiling is a test nobody writes.
     images: { maxWidth: 1024, maxBytes: 1000, maxCount: 3, historyTurns: 2 },
     kindle: { smtpHost: 'smtp.invalid', smtpPort: 587, fromEmail: 'jedd@invalid', smtpPassword: 'test-pw' },
+    // Disabled unless a test sets a URL and key. Usenet rows are then held, not fetched.
+    sabnzbd: {
+      baseUrl: '',
+      apiKey: '',
+      category: 'jedd-ebooks',
+      storagePrefix: '',
+      localDir: '',
+    },
+    ebookRecheckMs: 30_000,
     prowlarr: { baseUrl: 'http://prowlarr.invalid:9696', apiKey: 'test-key' },
     /**
      * 🔴 `.invalid` FOR THE SAME REASON THE SSH HOSTS ARE. A book test that
@@ -52,6 +62,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     openLibrary: { baseUrl: 'http://openlibrary.invalid' },
     sonarr: { baseUrl: 'http://sonarr.invalid:8989/sonarr/api/v3', apiKey: 'test-key', rootFolder: '/tv', qualityProfileId: 9 },
     radarr: { baseUrl: 'http://radarr.invalid:7878/radarr/api/v3', apiKey: 'test-key', rootFolder: '/movies', qualityProfileId: 6 },
+    plex: { baseUrl: '', token: '' },
     dispatcharr: { baseUrl: 'http://dispatcharr.test:9191' },
     // Non-empty so `whats_popular` is REGISTERED in tests. It is never used as a
     // credential: every test routes a stub fetch, and the client only ever talks
@@ -89,6 +100,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
       radarr: true,
       prowlarr: true,
       jellyfin: true,
+      plex: false,
       audiobookshelf: true,
       qbittorrent: true,
       dispatcharr: true,

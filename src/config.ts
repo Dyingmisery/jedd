@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { homedir } from 'node:os';
+import { EBOOK_RECHECK_MS_DEFAULT, EBOOK_RECHECK_MS_MAX, EBOOK_RECHECK_MS_MIN } from './followups.js';
 import { join } from 'node:path';
 
 /**
@@ -11,6 +12,12 @@ import { join } from 'node:path';
 export interface Config {
   /** Messaging handle of the single homelab owner. Everyone else is a guest. */
   ownerHandle: string;
+  /**
+   * Extra handles who may request an ebook. They are still guests. The book
+   * goes to the owner's saved Kindle address, not to an address they supply.
+   * Empty means only the owner. This does not widen `JEDD_SEND_TO`.
+   */
+  kindleSenders: string[];
   /**
    * 🔴 TWO ssh identities, and the separation IS the security boundary.
    *
@@ -92,6 +99,11 @@ export interface Config {
   openLibrary: { baseUrl: string };
   sonarr: { baseUrl: string; apiKey: string; rootFolder: string; qualityProfileId: number };
   radarr: { baseUrl: string; apiKey: string; rootFolder: string; qualityProfileId: number };
+  /**
+   * Read-only Plex check. Empty url or token means "not configured": Jedd must
+   * not say a title is available. The token is sent as a header, never in the path.
+   */
+  plex: { baseUrl: string; token: string };
   bluebubbles: {
     /**
      * 🔴 `:1234` is JEDD (jedd@example.com). `:1235` is Jeff's PERSONAL
@@ -155,6 +167,27 @@ export interface Config {
     fromEmail: string;
     smtpPassword: string;
   };
+  /**
+   * SABnzbd, for Usenet ebooks only. Empty `baseUrl` or `apiKey` means Usenet
+   * results are reported and not fetched. Torrent and IRC grabs do not read this.
+   *
+   * `storagePrefix` is the path SABnzbd writes into history `storage`.
+   * `localDir` is that same folder as this process sees it, via a read-only
+   * bind. Both are empty until set. There is no default directory.
+   */
+  sabnzbd: {
+    baseUrl: string;
+    apiKey: string;
+    category: string;
+    storagePrefix: string;
+    localDir: string;
+  };
+  /**
+   * How often a pending ebook is checked again. Other follow-ups keep their
+   * own gaps. The attempt ceiling is derived from a fixed wait budget so a
+   * shorter gap does not give up sooner.
+   */
+  ebookRecheckMs: number;
   dispatcharr: {
     baseUrl: string;
     username?: string;
@@ -355,6 +388,8 @@ export interface Config {
     radarr: boolean;
     prowlarr: boolean;
     jellyfin: boolean;
+    /** Both PLEX_URL and PLEX_TOKEN are set. Empty means the Plex tool is absent. */
+    plex: boolean;
     qbittorrent: boolean;
     dispatcharr: boolean;
     audiobookshelf: boolean;
@@ -486,6 +521,10 @@ export function loadConfig(): Config {
   const turnTimeoutMs = parseTurnTimeout(process.env.LLM_TURN_TIMEOUT_MS);
   return {
     ownerHandle: required('OWNER_HANDLE'),
+    kindleSenders: (process.env.JEDD_KINDLE_SENDERS ?? '')
+      .split(',')
+      .map((handle) => handle.trim())
+      .filter((handle) => handle.length > 0),
     shellSshHost,
     adminSshHost,
     shellIdentityShared: shellSshHost === adminSshHost,
@@ -539,6 +578,10 @@ export function loadConfig(): Config {
       rootFolder: process.env.RADARR_ROOT_FOLDER ?? '/media/movies',
       qualityProfileId: Number(process.env.RADARR_QUALITY_PROFILE_ID ?? 1),
     },
+    plex: {
+      baseUrl: (process.env.PLEX_URL ?? '').trim().replace(/\/+$/, ''),
+      token: (process.env.PLEX_TOKEN ?? '').trim(),
+    },
     bluebubbles: {
       baseUrl: process.env.BLUEBUBBLES_URL ?? 'http://127.0.0.1:1234',
       password: process.env.BLUEBUBBLES_PASSWORD ?? 'password',
@@ -575,6 +618,18 @@ export function loadConfig(): Config {
       fromEmail: process.env.KINDLE_FROM_EMAIL ?? '',
       smtpPassword: process.env.KINDLE_SMTP_PASSWORD ?? '',
     },
+    sabnzbd: {
+      // No default URL. A guessed host would look configured and is not.
+      baseUrl: (process.env.SABNZBD_URL ?? '').trim().replace(/\/+$/, ''),
+      apiKey: (process.env.SABNZBD_API_KEY ?? '').trim(),
+      category: (process.env.SABNZBD_CATEGORY ?? 'jedd-ebooks').trim() || 'jedd-ebooks',
+      storagePrefix: (process.env.SABNZBD_STORAGE_PREFIX ?? '').trim(),
+      localDir: (process.env.SABNZBD_LOCAL_DIR ?? '').trim(),
+    },
+    ebookRecheckMs: Math.max(
+      EBOOK_RECHECK_MS_MIN,
+      parsePositiveInt(process.env.EBOOK_RECHECK_MS, EBOOK_RECHECK_MS_DEFAULT, EBOOK_RECHECK_MS_MAX),
+    ),
     dispatcharr: {
       baseUrl: process.env.DISPATCHARR_URL ?? 'http://localhost:9191',
       username: process.env.DISPATCHARR_USER,
@@ -616,6 +671,7 @@ export function loadConfig(): Config {
       radarr: Boolean((process.env.RADARR_API_KEY ?? '').trim()),
       prowlarr: Boolean((process.env.PROWLARR_API_KEY ?? '').trim()),
       jellyfin: Boolean((process.env.JELLYFIN_API_KEY ?? '').trim()),
+      plex: Boolean((process.env.PLEX_URL ?? '').trim() && (process.env.PLEX_TOKEN ?? '').trim()),
       audiobookshelf: Boolean((process.env.ABS_API_KEY ?? '').trim()),
       // 🔴 These two have NON-EMPTY defaults, so the env var is the only honest
       // test of whether anyone configured them.

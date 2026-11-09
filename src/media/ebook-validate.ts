@@ -23,8 +23,25 @@
  * book away" with no reason is its own failure.
  */
 
-/** Formats Amazon still accepts. `.mobi` is deliberately NOT here — see below. */
-export type EbookFormat = 'epub' | 'azw3' | 'pdf';
+/** The only format this pipeline mails. Other Kindle formats are not converted. */
+export type EbookFormat = 'epub';
+
+const NON_EPUB_EXT =
+  /\.(?:mobi|azw3?|pdf|cbz|cbr|cbt|cb7|mp3|m4b|m4a|flac|ogg|aac|zip|rar|7z|exe|djvu|fb2|lit|prc|txt|html?|docx?|rtf)\b/i;
+
+/**
+ * Does this release name claim to be an EPUB, and not some other container?
+ * A `.epub.rar` is an archive. A bare "EPUB" token counts; a missing claim does not.
+ */
+export function isEpubClaim(name: string): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  if (/\.(?:rar|zip|7z)\b/i.test(n)) return false;
+  if (NON_EPUB_EXT.test(n) && !/\.epub\b/i.test(n)) return false;
+  if (/\.epub\b/i.test(n) || /\bepub\b/i.test(n)) return true;
+  // No format was named. That is not evidence of a PDF, AZW3, or audiobook.
+  return !/\.[a-z0-9]{2,5}\b/i.test(n);
+}
 
 export type EbookVerdict =
   | { state: 'ok'; format: EbookFormat; detail: string }
@@ -64,20 +81,14 @@ export function validateEbookBytes(filename: string, bytes: Buffer): EbookVerdic
   // container signature (see below), so the extension is the only thing that
   // distinguishes them, and this refusal has to happen before we congratulate
   // ourselves on a valid Mobipocket header.
-  if (lower.endsWith('.mobi')) {
-    return { state: 'rejected', detail: `"${name}" is a .mobi. ${DEAD_FORMAT_NOTE}` };
+  if (!lower.endsWith('.epub')) {
+    const mobi = lower.endsWith('.mobi') ? ` ${DEAD_FORMAT_NOTE}` : '';
+    return {
+      state: 'rejected',
+      detail: `"${name}" is not an EPUB.${mobi} Nothing was sent.`,
+    };
   }
-
-  if (lower.endsWith('.epub')) return epubVerdict(name, bytes);
-  if (lower.endsWith('.azw3')) return mobiFamilyVerdict(name, bytes);
-  if (lower.endsWith('.pdf')) return pdfVerdict(name, bytes);
-
-  return {
-    state: 'rejected',
-    detail:
-      `"${name}" is not a format the Kindle accepts (.epub, .azw3 or .pdf). ` +
-      `It looks like ${describeBytes(bytes)}. Nothing was sent.`,
-  };
+  return epubVerdict(name, bytes);
 }
 
 /**
@@ -134,49 +145,6 @@ function epubVerdict(name: string, bytes: Buffer): EbookVerdict {
     };
   }
   return { state: 'ok', format: 'epub', detail: `"${name}" is a valid EPUB (${bytes.length} bytes).` };
-}
-
-/**
- * MOBI and AZW3 are both Palm databases with `BOOKMOBI` at offset 60.
- *
- * ⚠️ **The signature cannot tell them apart** — AZW3 (KF8) differs in the MOBI
- * header version inside the first record, not in the container. So the extension
- * decides which one it claims to be, and this only proves it is a member of the
- * family rather than something else wearing the name.
- *
- * Stated plainly because it is a real limit: a `.mobi` renamed to `.azw3` passes
- * here. That costs an invisible Amazon bounce, which is bad — but it is not a
- * safety hole, and pretending to a precision we do not have would be worse.
- */
-function mobiFamilyVerdict(name: string, bytes: Buffer): EbookVerdict {
-  if (bytes.length < 68) {
-    return {
-      state: 'rejected',
-      detail: `"${name}" is only ${bytes.length} bytes — far too short to be a book.`,
-    };
-  }
-  const sig = bytes.subarray(60, 68).toString('latin1');
-  if (sig !== 'BOOKMOBI') {
-    return {
-      state: 'rejected',
-      detail:
-        `"${name}" is named .azw3 but carries no Mobipocket signature — it looks like ` +
-        `${describeBytes(bytes)}. Nothing was sent.`,
-    };
-  }
-  return { state: 'ok', format: 'azw3', detail: `"${name}" is a valid AZW3 (${bytes.length} bytes).` };
-}
-
-function pdfVerdict(name: string, bytes: Buffer): EbookVerdict {
-  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') {
-    return {
-      state: 'rejected',
-      detail:
-        `"${name}" is named .pdf but has no PDF header — it looks like ${describeBytes(bytes)}. ` +
-        'Nothing was sent.',
-    };
-  }
-  return { state: 'ok', format: 'pdf', detail: `"${name}" is a valid PDF (${bytes.length} bytes).` };
 }
 
 function hasZipMagic(bytes: Buffer): boolean {

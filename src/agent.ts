@@ -11,6 +11,7 @@ import { isModelTimeout } from './turn-notice.js';
 import type { HistoryStore } from './store.js';
 import { roleFor, roleSatisfies, type Role } from './permissions.js';
 import { ALL_TOOLS } from './tools/index.js';
+import { replyToNumericMediaChoice } from './media/media-request.js';
 import type { Tool, ToolContext } from './tools/types.js';
 
 /**
@@ -254,6 +255,11 @@ function systemPrompt(config: Config, role: Role): string {
     '',
     'Use only the tools you have been given. If something is not among them, say you cannot do it',
     'rather than guessing at who is asking or what you might be permitted elsewhere.',
+    config.services.plex
+      ? 'If they ask whether something is on Plex, call plex_availability and use that result. ' +
+        'library_search is Jellyfin and Sonarr, not Plex. Do not say you have no Plex access when ' +
+        'plex_availability is available, and do not say a title is on Plex unless that tool said so.'
+      : '',
     '',
     '',
     // ── Conversational steering. PROSE ON PURPOSE. ───────────────────────────
@@ -475,6 +481,7 @@ export class Agent {
     private readonly followups?: FollowupStore,
     private readonly choices?: ChoiceStore,
     private readonly kindle?: KindleRegistry,
+    private readonly sendImage?: (senderHandle: string, filename: string, bytes: Buffer) => Promise<boolean>,
   ) {
     this.registry = registry;
   }
@@ -547,6 +554,10 @@ export class Agent {
       // Filtered ONCE, here. A tool receives only what this person typed.
       userTurns: [],
     };
+    if (this.sendImage) {
+      const send = this.sendImage;
+      ctx.sendImage = (filename, bytes) => send(senderHandle, filename, bytes);
+    }
 
     // History is keyed by sender, so one process serves many conversations and
     // no history can leak from one identity to another.
@@ -614,12 +625,20 @@ export class Agent {
     const toolCalls: ToolInvocation[] = [];
     let replyText = '';
     let steps = 0;
+    const numeric = await replyToNumericMediaChoice(userText, ctx, {
+      addMovie: this.registry.find((t) => t.name === 'add_movie'),
+      addSeries: this.registry.find((t) => t.name === 'add_series'),
+    });
+    if (numeric) {
+      replyText = numeric;
+      history.push({ role: 'assistant', content: replyText });
+    }
     /**
      * The reply the second look was given a chance to revise, and the index in
      * `history` where it sits. Unset until (and unless) the second look fires,
      * which is at most once per turn.
      */
-    for (; steps < MAX_STEPS; steps++) {
+    for (; !replyText && steps < MAX_STEPS; steps++) {
       // ⚠️ One retry on ModelTimeoutError. oMLX on .71 is shared with Hermes;
       // a long wait is acceptable, but a single busy window should not kill the
       // whole turn. Exactly one retry — not a loop — so a truly stuck model
@@ -736,11 +755,13 @@ export class Agent {
 
         let content: string;
         let succeeded: boolean;
+        let spoken: string | undefined;
         const startedAt = Date.now();
         try {
           const result = await tool.run(call.arguments, ctx);
           content = result.content;
           succeeded = result.ok;
+          spoken = result.verbatimReply;
         } catch (e) {
           content = `Tool "${tool.name}" threw: ${describeError(e, redactUrlSecrets)}`;
           succeeded = false;
@@ -795,6 +816,10 @@ export class Agent {
           ...(succeeded ? {} : { error: firstLines(content) }),
         });
         history.push({ role: 'tool', toolName: tool.name, toolCallId: call.id, content });
+        if (spoken) {
+          replyText = spoken;
+          break;
+        }
       }
     }
 

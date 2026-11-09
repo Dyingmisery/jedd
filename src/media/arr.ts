@@ -1,5 +1,6 @@
 import { describeError, redactUrlSecrets } from '../errors.js';
 import { plausible, type Candidate } from './matching.js';
+import { posterRemoteUrl } from './poster.js';
 import { parseQueue, type Release } from './queue.js';
 import { parseShowSeasons, type ShowSeasons } from './seasons.js';
 
@@ -315,11 +316,13 @@ export class ArrClient {
         this.kind === 'series' && typeof networkRaw === 'string' && networkRaw.trim()
           ? networkRaw.trim()
           : undefined;
+      const posterUrl = posterRemoteUrl(row);
       return {
         id: typeof raw === 'number' && Number.isFinite(raw) ? raw : 0,
         title: String(row['title'] ?? ''),
         year: typeof row['year'] === 'number' ? row['year'] : undefined,
         network,
+        ...(posterUrl ? { posterUrl } : {}),
       };
     });
   }

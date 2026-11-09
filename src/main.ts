@@ -31,6 +31,7 @@ import { InviteLedger } from './invite-ledger.js';
 import { JfagoClient } from './jfago.js';
 import { AbsClient } from './audiobookshelf.js';
 import { runDueFollowups } from './followup-runner.js';
+import { plexFromConfig } from './media/plex.js';
 import { proveShellIdentityIsSafe } from './identity-probe.js';
 import { KindleRegistry } from './kindle.js';
 import { IrcEbooks } from './media/irc-ebooks.js';
@@ -312,16 +313,12 @@ async function main(): Promise<void> {
     verifySent: (to: string, text: string) => client.recentlySent(to, text),
   };
   /**
-   * ⚠️ `send_ebook` IS RESTRICTED TO THE OWNER IN THIS BUILD.
-   *
-   * It is `minRole: 'guest'` by declaration and the address it mails is
-   * provenance-verified per sender, so widening it is one line — delete
-   * `onlySendTo`. It is narrow here because the path has had exactly ONE live
-   * send ever, and this is its first exposure to real household traffic. A guest
-   * who asks gets a visible refusal naming the restriction, which is the safe
-   * direction: annoying beats an unrecallable email.
+   * Ebook senders are the owner plus `JEDD_KINDLE_SENDERS`. The check lives in
+   * the tools and in `deliverEbook`, so a follow-up uses the same list. This
+   * does not widen `JEDD_SEND_TO`, and the recipient stays the owner's saved
+   * Kindle address.
    */
-  const ebook = { send: await realMailSender(config), onlySendTo: config.ownerHandle };
+  const ebook = { send: await realMailSender(config) };
 
   /**
    * Reads Amazon's refusal notices out of the sending account.
@@ -412,7 +409,17 @@ async function main(): Promise<void> {
   }
 
   const tools = buildTools(config, shellIdentity, { invite, absInvite, ebook, ...(irc ? { irc } : {}) });
-  const agent = new Agent(config, llm, recordTurn, tools, history, followups, choices, kindle);
+  const agent = new Agent(
+    config,
+    llm,
+    recordTurn,
+    tools,
+    history,
+    followups,
+    choices,
+    kindle,
+    (handle, filename, bytes) => connector.sendImage(handle, filename, bytes),
+  );
 
   console.error(
     `[jedd] model=${llm.label} owner=${config.ownerHandle} ` +
@@ -452,6 +459,19 @@ async function main(): Promise<void> {
   if (off.length) {
     console.error(`[jedd] not configured, so NOT offered (${off.length}):`);
     for (const line of off) console.error(`[jedd]   - ${line}`);
+  }
+  if (config.kindle.smtpPassword && (!config.sabnzbd.baseUrl || !config.sabnzbd.apiKey)) {
+    console.error(
+      '[jedd] usenet ebooks off — set SABNZBD_URL and SABNZBD_API_KEY. Torrent and IRC ebook paths are unchanged.',
+    );
+  } else if (
+    config.sabnzbd.baseUrl &&
+    config.sabnzbd.apiKey &&
+    (!config.sabnzbd.storagePrefix || !config.sabnzbd.localDir)
+  ) {
+    console.error(
+      '[jedd] usenet ebooks off until SABNZBD_STORAGE_PREFIX and SABNZBD_LOCAL_DIR are set. Nothing will be queued.',
+    );
   }
 
   const reg = await client.ensureWebhook(config.bluebubbles.publicUrl, ['new-message']);
@@ -505,30 +525,38 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
+  // 🔴 The follow-up runner sends through the SAME gated connector, so a
+  // rehearsal cannot leak a "here is how that download went" message to
+  // somebody outside the send audience an hour after the window closed.
+  const followupDeps = {
+    config,
+    send: (to: string, text: string) => connector.send(to, text),
+    // An `ebook-deliver` follow-up finishes the job the turn could not: it
+    // needs the same address store and mail sender the tool used, and the IRC
+    // client, because for IRC the REQUEST itself happens out here.
+    kindle,
+    mail: ebook.send,
+    // 🔴 The leg that closes the loop: Amazon reports a refusal by EMAIL,
+    // minutes after the send has already returned a clean 250, so the only
+    // place that evidence exists is the sending account's mailbox. Absent
+    // credentials leave `mailbox` undefined, and the check then reports
+    // `blind` rather than silence — see `runKindleVerify`.
+    ...(mailbox ? { mailbox } : {}),
+    mounts: DEFAULT_MOUNTS,
+    ...(irc ? { irc } : {}),
+    ...(plexFromConfig(config.plex) ? { plex: plexFromConfig(config.plex)! } : {}),
+  };
   const timer = setInterval(() => {
-    // 🔴 The follow-up runner sends through the SAME gated connector, so a
-    // rehearsal cannot leak a "here is how that download went" message to
-    // somebody outside the send audience an hour after the window closed.
-    void runDueFollowups(followups, {
-      config,
-      send: (to, text) => connector.send(to, text),
-      // An `ebook-deliver` follow-up finishes the job the turn could not: it
-      // needs the same address store and mail sender the tool used, and the IRC
-      // client, because for IRC the REQUEST itself happens out here.
-      kindle,
-      mail: ebook.send,
-      // 🔴 The leg that closes the loop: Amazon reports a refusal by EMAIL,
-      // minutes after the send has already returned a clean 250, so the only
-      // place that evidence exists is the sending account's mailbox. Absent
-      // credentials leave `mailbox` undefined, and the check then reports
-      // `blind` rather than silence — see `runKindleVerify`.
-      ...(mailbox ? { mailbox } : {}),
-      mounts: DEFAULT_MOUNTS,
-      onlySendTo: ebook.onlySendTo,
-      ...(irc ? { irc } : {}),
-    });
+    void runDueFollowups(followups, followupDeps);
   }, TICK_MS);
   timer.unref();
+  // Ebook jobs only. The shared tick above stays at 60s so media, throttle,
+  // and Kindle-verify keep their cadence. The overlap guard in the runner
+  // is what stops the two timers delivering one book twice.
+  const ebookTimer = setInterval(() => {
+    void runDueFollowups(followups, followupDeps, { kind: 'ebook-deliver' });
+  }, config.ebookRecheckMs);
+  ebookTimer.unref();
 
   let turns = 0;
 

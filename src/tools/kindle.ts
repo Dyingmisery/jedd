@@ -1,3 +1,4 @@
+import { mayRequestKindle, sameHandle } from '../permissions.js';
 import { fail, ok, type Tool } from './types.js';
 
 /**
@@ -46,6 +47,9 @@ export const saveKindleEmail: Tool = {
     if (!raw.trim()) return fail('No address supplied.');
     if (!ctx.kindle) return fail('No address store is available, so nothing was saved.');
     if (ctx.config.readOnly) return fail('Writes are disabled, so nothing was saved.');
+    if (!sameHandle(ctx.senderHandle, ctx.config.ownerHandle)) {
+      return fail('REFUSED — this sender cannot set the Kindle address. Nothing was saved.');
+    }
 
     const result = ctx.kindle.save(ctx.senderHandle, raw, ctx.userTurns ?? []);
     if (!result.ok) return fail(result.reason);
@@ -69,6 +73,12 @@ export const kindleStatus: Tool = {
   parameters: { type: 'object', properties: {}, required: [] },
   async run(_args, ctx) {
     if (!ctx.kindle) return fail('No address store is available.');
+    if (!sameHandle(ctx.senderHandle, ctx.config.ownerHandle)) {
+      if (!mayRequestKindle(ctx.senderHandle, ctx.config)) {
+        return fail('REFUSED — ebook sending is not enabled for this sender.');
+      }
+      return ok('CONFIGURED — books go to the household Kindle address. This sender cannot change it.');
+    }
     const rec = ctx.kindle.get(ctx.senderHandle);
     return rec
       ? ok(`STORED — ${rec.address} (saved ${rec.at.slice(0, 10)}).`)

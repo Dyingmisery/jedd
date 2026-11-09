@@ -54,6 +54,17 @@ guessing is that it answers everyone who has ever messaged that Mac.
   Start here.
 - `JEDD_SEND_TO=everyone` — anyone who texts it. Only once you trust it.
 
+### A second person requesting ebooks
+
+`JEDD_KINDLE_SENDERS` is a comma-separated list of handles, besides
+`OWNER_HANDLE`, who may search and request an ebook. Leave it empty and only
+the owner can. A listed person stays a guest: they do not get shell, Docker,
+indexer, or qBittorrent access, and they cannot set or change the Kindle
+address. The file is emailed to the address the owner already saved. They must
+also be allowed to receive a reply. If `JEDD_SEND_TO` is a list rather than
+`everyone`, add the same handle there too. Compose passes this through
+`env_file: .env`. The process reads it at startup.
+
 ### ⚠️ `localhost` will not work from inside the container
 
 The single most common first-run failure. In a container, `localhost` means
@@ -93,6 +104,8 @@ that row and nothing else.
 | `HP_ADMIN_SSH_HOST` | **12 tools**: docker ps/inspect/logs, restart a container, restart the *arr stack, diagnose host contention, live-TV checks |
 | `HP_SHELL_SSH_HOST` | `hp_shell` — free-form read-only shell. See the security note below. |
 | `KINDLE_SMTP_*` | **4 tools**: find an ebook and send it to a Kindle, plus address intake |
+| `SABNZBD_URL` + `SABNZBD_API_KEY` + `SABNZBD_STORAGE_PREFIX` + `SABNZBD_LOCAL_DIR` | Usenet ebooks: queue an NZB in SABnzbd and mail it when the job completes. Torrent and IRC ebooks work without this |
+| `PLEX_URL` + `PLEX_TOKEN` | Say a requested movie or the requested seasons are on Plex, only after a matching guid and a real media file. Posters do not use this |
 | `JFAGO_URL` + `JFAGO_PASSWORD` | Invite someone to your Jellyfin |
 | `DISPATCHARR_URL` | Live-TV channel health |
 | `IRC_EBOOKS=1` | A second ebook source besides Prowlarr |
@@ -100,6 +113,60 @@ that row and nothing else.
 
 Full descriptions of every variable are in **`.env.example`**, which is the
 complete reference — every variable the code reads is documented there.
+
+### Usenet ebooks (SABnzbd)
+
+Torrent grabs still go to qBittorrent over SSH (`EBOOK_HOST_DOWNLOAD_PREFIX`).
+IRC grabs are unchanged. Usenet is a third fetcher. It runs only when the
+SABnzbd URL, API key, storage prefix, and local directory are all set.
+
+Create a SABnzbd category named `jedd-ebooks` (or whatever `SABNZBD_CATEGORY`
+is) with its own folder, not the incomplete directory and not another app's
+category. `SABNZBD_STORAGE_PREFIX` is that folder as SABnzbd reports it in
+history `storage`. There is no default path.
+
+Jedd does not read the download over SSH. Bind-mount only that category
+directory read-only, and set `SABNZBD_LOCAL_DIR` to the path inside Jedd.
+Example, not a deployed layout:
+
+```yaml
+- /srv/downloads/ebooks:/ebooks:ro
+```
+
+```
+SABNZBD_STORAGE_PREFIX=/library/ebooks
+SABNZBD_LOCAL_DIR=/ebooks
+```
+
+Usenet copies are not offered, and nothing is queued, until the URL, the API
+key, and both paths are set. A pending ebook is checked about every 30 seconds
+(`EBOOK_RECHECK_MS`). Media, throttle, and Kindle-verify follow-ups keep their
+own gaps. The ebook watch still lasts about 40 minutes before it says it stopped.
+
+`SABNZBD_URL` is the SABnzbd server root with no `/api` suffix. This repo does
+not ship a host or a port for it. A finished job is mailed only after history
+says `Completed` and includes a storage path, the file is an EPUB, PDF, or
+AZW3 inside that mount, and the existing validator accepts the bytes. The
+iMessage says the mail server accepted the file. It does not say the Kindle
+device has it. Amazon refusals still come back through the existing IMAP check.
+
+### Movie and show requests
+
+A contested title asks which one, with a number, the year, and a poster when
+Radarr or Sonarr returned an allowlisted `remotePoster`. A reply that is only
+that number uses the stored row. It does not search again. The first text after
+an accepted add is "Your request for Title (Year) has been added." The second,
+"Title is now available on Plex.", is sent only after Plex returns that same
+tmdb or tvdb id and a media file. A season request names those seasons. An
+episode that has not aired yet does not count, and one episode on disk is not
+the whole show. If `PLEX_URL` or `PLEX_TOKEN` is empty, Jedd says it cannot
+check Plex. It does not call the title available. Posters are fetched only from
+`https://image.tmdb.org` and `https://artworks.thetvdb.com`. No TMDB read token
+is required for that. A missing poster does not cancel the request.
+
+Asking whether a title is on Plex is a separate read. It uses the same `PLEX_URL` and `PLEX_TOKEN`, looks the title up in Radarr or Sonarr, and checks Plex for that id and a media file. It does not add or download anything. Jellyfin answers stay on the library search. If Plex is not configured, Jedd says it cannot check. It does not invent an answer.
+
+Ebook search only offers an EPUB. A PDF, AZW3, MOBI, comic, or audiobook is not chosen and is not converted. If none is found, or the download has no EPUB, the reply is "I couldn't find an EPUB of Title." A book request says "Your request for Title has been added." only after the download is accepted. Checks while it downloads stay silent. After the mail server accepts the file, the text is "Title has been emailed to your Kindle address." That is not a claim the Kindle device has it. A failure or the end of the wait is one short line.
 
 ### 🔴 If you set the two SSH variables, make them different accounts
 

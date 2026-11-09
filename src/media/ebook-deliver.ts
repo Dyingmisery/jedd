@@ -2,11 +2,14 @@ import type { Config } from '../config.js';
 import type { EbookDeliverSubject } from '../followups.js';
 import type { ExecImpl } from '../hp.js';
 import type { KindleRegistry } from '../kindle.js';
+import { mayRequestKindle, sameHandle } from '../permissions.js';
 import { validateEbookBytes } from './ebook-validate.js';
 import { fetchFileFromHp, resolveBookPath } from './fetch-file.js';
 import { grabStatus, toHostPath, type MountMap } from './grab.js';
 import type { IrcEbooks } from './irc-ebooks.js';
 import { sendToKindle, type MailSender } from './kindle-send.js';
+import { readContainedBook } from './sab-files.js';
+import { SabnzbdClient, type FetchImpl } from './sabnzbd.js';
 
 /**
  * The last leg of an ebook, shared by BOTH sources and by both callers.
@@ -21,6 +24,47 @@ import { sendToKindle, type MailSender } from './kindle-send.js';
  * An indexer is no more trustworthy than an IRC bot. Nothing reaches the mail
  * step without its bytes being identified first.
  */
+
+export function bookRequestAdded(title: string): string {
+  return `Your request for ${title} has been added.`;
+}
+
+export function bookAlreadyRequested(title: string): string {
+  return `Your request for ${title} is already in.`;
+}
+
+/** SMTP accepted the message. This is not a claim the device has it. */
+export function bookEmailed(title: string): string {
+  return `${title} has been emailed to your Kindle address.`;
+}
+
+export function bookCouldNotAdd(title: string): string {
+  return `I could not add ${title}. Nothing was sent.`;
+}
+
+export function bookCouldNotEmail(title: string): string {
+  return `I could not email ${title}. Nothing was sent. I have stopped trying.`;
+}
+
+export function bookStoppedWaiting(title: string): string {
+  return `I stopped waiting for ${title}. It has not been emailed.`;
+}
+
+export function bookNoEpub(title: string): string {
+  return `I couldn't find an EPUB of ${title}.`;
+}
+
+export function bookFailureLine(title: string, detail: string): string {
+  if (/Send-to-Kindle address/i.test(detail)) return detail;
+  if (/may already have gone/i.test(detail)) {
+    return `I could not tell whether ${title} was emailed. I have not tried again, because it may already have gone.`;
+  }
+  if (/not an EPUB/i.test(detail)) return bookNoEpub(title);
+  if (/WINDOWS EXECUTABLE/i.test(detail)) {
+    return `I could not email ${title}. The file was not a book. Nothing was sent. I have stopped trying.`;
+  }
+  return bookCouldNotEmail(title);
+}
 
 export type DeliverOutcome =
   /**
@@ -59,6 +103,8 @@ export interface DeliverDeps {
   followups?: FollowupScheduler;
   exec?: ExecImpl;
   irc?: IrcEbooks;
+  /** Test seam for SABnzbd. Unset in production. */
+  sabFetch?: FetchImpl;
   mounts?: MountMap[];
   /**
    * 🔴 THE LIVE-TEST RESTRICTION LIVES HERE, NOT ONLY IN THE TOOL.
@@ -89,27 +135,32 @@ export async function deliverEbook(
    * registry, keyed by the person asking — never from a parameter, and never
    * from a record written minutes or hours ago that may since have changed.
    */
-  if (deps.onlySendTo && senderHandle !== deps.onlySendTo) {
+  if (!mayRequestKindle(senderHandle, deps.config, deps.onlySendTo)) {
     return {
       state: 'failed',
-      detail: `this build only sends books to ${deps.onlySendTo}. Nothing was sent.`,
+      detail: 'ebook sending is not enabled for this sender. Nothing was sent.',
     };
   }
 
-  const record = deps.kindle.get(senderHandle);
+  // The recipient is the address the owner already saved. A guest does not
+  // get their own, and cannot name a different one.
+  const record = deps.kindle.get(deps.config.ownerHandle);
   if (!record) {
     return {
       state: 'failed',
-      detail:
-        'I do not have a Send-to-Kindle address saved for you, so I could not send it. ' +
-        'Tell me your @kindle.com address and I will finish this.',
+      detail: sameHandle(senderHandle, deps.config.ownerHandle)
+        ? 'I do not have a Send-to-Kindle address saved for you, so I could not send it. ' +
+          'Tell me your @kindle.com address and I will finish this.'
+        : 'No Kindle address is configured. Nothing was sent.',
     };
   }
 
   const got =
     subject.source === 'irc'
       ? await fetchViaIrc(subject, deps, opts.mayBlock)
-      : await fetchViaTorrent(subject, deps);
+      : subject.source === 'sab'
+        ? await fetchViaSab(subject, deps)
+        : await fetchViaTorrent(subject, deps);
   if (got.state !== 'ok') return got;
 
   // ── identify the bytes before anything else touches them ──────────────────
@@ -262,6 +313,38 @@ async function fetchViaIrc(subject: EbookDeliverSubject, deps: DeliverDeps, mayB
   // `failed` from the client is terminal (bot absent, never answered, truncated,
   // passive DCC). `unknown` means we could not even establish that much.
   return r.state === 'failed' ? { state: 'failed', detail: r.detail } : { state: 'unknown', detail: r.detail };
+}
+
+/** SABnzbd: poll the stored job id, then read the file off the local mount. */
+async function fetchViaSab(subject: EbookDeliverSubject, deps: DeliverDeps): Promise<Got> {
+  if (!subject.nzoId) {
+    return {
+      state: 'failed',
+      detail: 'that pick did not carry a SABnzbd job id, so it cannot be fetched. Nothing was resubmitted.',
+    };
+  }
+  const sab = deps.config.sabnzbd;
+  const job = await new SabnzbdClient({
+    baseUrl: sab.baseUrl,
+    apiKey: sab.apiKey,
+    category: sab.category,
+    ...(deps.sabFetch ? { fetchImpl: deps.sabFetch } : {}),
+  }).job(subject.nzoId);
+  if (job.state === 'queued' || job.state === 'missing' || job.state === 'incomplete') {
+    return { state: 'waiting', detail: job.state === 'queued' ? `SABnzbd still has the job (${job.status}). Nothing has been mailed.` : job.detail };
+  }
+  if (job.state === 'unknown') return { state: 'unknown', detail: job.detail };
+  if (job.state === 'failed') return { state: 'failed', detail: `${job.detail} Nothing was sent.` };
+
+  const book = await readContainedBook({
+    storage: job.storage,
+    storagePrefix: sab.storagePrefix,
+    localDir: sab.localDir,
+  });
+  if (book.state === 'ok') return { state: 'ok', filename: book.filename, bytes: book.bytes };
+  if (book.state === 'absent') return { state: 'waiting', detail: book.detail };
+  if (book.state === 'rejected') return { state: 'failed', detail: `${book.detail} Nothing was sent.` };
+  return { state: 'unknown', detail: book.detail };
 }
 
 /** Prowlarr/qBittorrent: is it on disk yet, and if so read it off hp. */

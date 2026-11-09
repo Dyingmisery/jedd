@@ -54,7 +54,7 @@ export function isSafeHostPath(p: string): boolean {
  * `pharmakate.txt` — nested one level deeper than `content_path` pointed. Largest
  * happens to be right here and would be wrong for a bundle with a big PDF scan.
  */
-const BOOK_EXTENSIONS = ['.epub', '.azw3', '.mobi', '.pdf'] as const;
+const BOOK_EXTENSIONS = ['.epub'] as const;
 
 export type ResolveOutcome =
   | { state: 'ok'; path: string }
@@ -89,7 +89,12 @@ export async function resolveBookPath(input: {
     return { state: 'unknown', detail: `could not inspect the path (exit ${out.exitCode}).` };
   }
   const text = out.stdout.trim();
-  if (text === 'FILE') return { state: 'ok', path: input.hostPath };
+  if (text === 'FILE') {
+    if (!input.hostPath.toLowerCase().endsWith('.epub')) {
+      return { state: 'none', detail: `"${input.hostPath}" is not an EPUB. Nothing to send.` };
+    }
+    return { state: 'ok', path: input.hostPath };
+  }
   if (text === 'ABSENT' || !text) {
     return {
       state: 'none',

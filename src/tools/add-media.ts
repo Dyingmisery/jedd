@@ -1,5 +1,6 @@
 import { ArrClient, type FetchImpl } from '../media/arr.js';
-import { fail, ok, type Tool, type ToolContext } from './types.js';
+import { addedLine, plexCheckerFor, plexStatusLine, titled } from '../media/plex.js';
+import { fail, ok, type Tool, type ToolContext, type ToolResult } from './types.js';
 
 /**
  * Adding things. The write half of the media path.
@@ -35,6 +36,7 @@ export async function watchIt(
   title: string,
   seasons: number[],
   observed: string,
+  year?: number,
 ): Promise<string> {
   const followups = ctx.followups;
   // 🔴 A tool must never PROMISE a follow-up it did not manage to schedule.
@@ -48,7 +50,7 @@ export async function watchIt(
     dueAt: new Date(Date.now() + 60 * 60 * 1000),
     reason: `added "${title}"${seasons.length ? ` (season(s) ${seasons.join(', ')})` : ''}`,
     observed,
-    subject: { arr, id, title, seasons },
+    subject: { arr, id, title, seasons, ...(year && year > 0 ? { year } : {}) },
   });
   return ' I will check back and tell you how it went, whether or not it works.';
 }
@@ -70,14 +72,21 @@ export function makeAddMovie(fetchImpl?: FetchImpl): Tool {
       properties: {
         tmdb_id: { type: 'number', description: 'tmdbId from catalogue_search.' },
         title: { type: 'string', description: 'Title, for the confirmation message.' },
+        year: { type: 'number', description: 'Release year from the catalogue line, when it had one.' },
       },
       required: ['tmdb_id', 'title'],
     },
     async run(args, ctx) {
-      const id = Number(args['tmdb_id']);
-      const title = String(args['title'] ?? '').trim();
+      const picked = await lockedPick(ctx, args, 'movie');
+      if (picked.block) return picked.block;
+      const id = picked.id ?? Number(args['tmdb_id']);
+      const title = picked.title || String(args['title'] ?? '').trim();
+      const year = picked.year ?? (Number(args['year']) > 0 ? Number(args['year']) : undefined);
       if (!Number.isFinite(id) || id <= 0) return fail('A valid tmdbId is required. Search first.');
-      if (ctx.config.readOnly) return fail('Writes are disabled, so nothing was added.');
+      if (ctx.config.readOnly) return refuseWrite();
+      if (ctx.followups?.pendingForSubject(ctx.senderHandle, 'movie', id)) {
+        return alreadyRequested(title, year);
+      }
 
       const client = new ArrClient({ ...ctx.config.radarr, fetchImpl }, 'movie');
       const outcome = await client.addMovie({
@@ -88,16 +97,15 @@ export function makeAddMovie(fetchImpl?: FetchImpl): Tool {
       });
       switch (outcome.state) {
         case 'started': {
-          const note = await watchIt(ctx, 'movie', id, title, [], outcome.detail);
-          return ok(`STARTED — ${outcome.detail}${note}`);
+          const note = await watchIt(ctx, 'movie', id, title, [], outcome.detail, year);
+          return accepted(`STARTED — ${outcome.detail}${note}`, addedLine(title, year, 'movie', []));
         }
         case 'already-have':
-          // 🔴 SUCCESS, not failure. Never tell them to retry.
-          return ok(`ALREADY_HAVE — ${outcome.detail}`);
+          return accepted(`ALREADY_HAVE — ${outcome.detail}`, await alreadyInLibrary(ctx, fetchImpl, 'movie', id, title, year, []));
         case 'unknown':
-          return fail(`UNKNOWN — ${outcome.detail}`);
+          return notAdded(title, `UNKNOWN — ${outcome.detail}`);
         case 'failed':
-          return fail(`FAILED — ${outcome.detail}`);
+          return notAdded(title, `FAILED — ${outcome.detail}`);
       }
     },
   };
@@ -117,13 +125,14 @@ export function makeAddSeries(fetchImpl?: FetchImpl): Tool {
       'unless those seasons are complete on disk. The result includes a release scout (seeder health on a ' +
       'sample missing episode). If swarms look dead or thin, or a download later sits at 0%, fall through ' +
       'to the gap-fill / episode-release tools that rank by seeder health (and can grab outside the quality profile).',
-minRole: 'guest',
+    minRole: 'guest',
     writes: true,
     parameters: {
       type: 'object',
       properties: {
         tvdb_id: { type: 'number', description: 'tvdbId from catalogue_search.' },
         title: { type: 'string' },
+        year: { type: 'number', description: 'First-air year from the catalogue line, when it had one.' },
         seasons: {
           type: 'array',
           items: { type: 'number' },
@@ -138,8 +147,11 @@ minRole: 'guest',
       required: ['tvdb_id', 'title', 'seasons', 'available_seasons'],
     },
     async run(args, ctx) {
-      const id = Number(args['tvdb_id']);
-      const title = String(args['title'] ?? '').trim();
+      const picked = await lockedPick(ctx, args, 'series');
+      if (picked.block) return picked.block;
+      const id = picked.id ?? Number(args['tvdb_id']);
+      const title = picked.title || String(args['title'] ?? '').trim();
+      const year = picked.year ?? (Number(args['year']) > 0 ? Number(args['year']) : undefined);
       const seasons = Array.isArray(args['seasons']) ? args['seasons'].map(Number).filter(Number.isFinite) : [];
       const available = Array.isArray(args['available_seasons'])
         ? args['available_seasons'].map(Number).filter(Number.isFinite)
@@ -148,7 +160,10 @@ minRole: 'guest',
       if (seasons.length === 0) {
         return fail('No seasons given. Ask which seasons they want rather than guessing at all of them.');
       }
-      if (ctx.config.readOnly) return fail('Writes are disabled, so nothing was added.');
+      if (ctx.config.readOnly) return refuseWrite();
+      if (ctx.followups?.pendingForSubject(ctx.senderHandle, 'series', id)) {
+        return alreadyRequested(title, year);
+      }
 
       const client = new ArrClient({ ...ctx.config.sonarr, fetchImpl }, 'series');
       const outcome = await client.addSeries({
@@ -161,17 +176,106 @@ minRole: 'guest',
       });
       switch (outcome.state) {
         case 'started': {
-          const note = await watchIt(ctx, 'series', id, title, outcome.confirmed, outcome.detail);
-          // Name only what was actually requested and accepted — never "all of it".
-          return ok(`STARTED — ${outcome.detail}${note}`);
+          const note = await watchIt(ctx, 'series', id, title, outcome.confirmed, outcome.detail, year);
+          return accepted(
+            `STARTED — ${outcome.detail}${note}`,
+            addedLine(title, year, 'series', outcome.confirmed),
+          );
         }
         case 'already-have':
-          return ok(`ALREADY_HAVE — ${outcome.detail}`);
+          return accepted(
+            `ALREADY_HAVE — ${outcome.detail}`,
+            await alreadyInLibrary(ctx, fetchImpl, 'series', id, title, year, seasons),
+          );
         case 'unknown':
-          return fail(`UNKNOWN — ${outcome.detail}`);
+          return notAdded(title, `UNKNOWN — ${outcome.detail}`);
         case 'failed':
-          return fail(`FAILED — ${outcome.detail}`);
+          return notAdded(title, `FAILED — ${outcome.detail}`);
       }
     },
+  };
+}
+
+interface Locked {
+  block?: ToolResult;
+  id?: number;
+  title: string;
+  year?: number;
+}
+
+/**
+ * A stored list is the only source of the id while it is open.
+ * A bare number selects one option. Two or more options and no number adds nothing.
+ * One remaining option is the show they already picked, so a later season add uses it.
+ */
+async function lockedPick(ctx: ToolContext, args: Record<string, unknown>, arr: 'movie' | 'series'): Promise<Locked> {
+  const blank: Locked = { title: '' };
+  const pending = ctx.choices?.pending(ctx.senderHandle);
+  if (!pending || pending.kind !== 'media-choice') return blank;
+  const n = Number(args['choice']);
+  if (Number.isInteger(n) && n > 0) {
+    const hit = pending.options[n - 1];
+    if (!hit) return { title: '', block: fail('That number is not on the list. Nothing was added.') };
+    const value = hit.value as { arr?: string; id?: number; title?: string; year?: number };
+    if (value.arr !== arr) {
+      const other = value.arr === 'movie' ? 'movie' : 'show';
+      return { title: '', block: fail(`That number is a ${other}. Nothing was added.`) };
+    }
+    return {
+      id: Number(value.id),
+      title: String(value.title ?? ''),
+      ...(Number(value.year) > 0 ? { year: Number(value.year) } : {}),
+    };
+  }
+  if (pending.options.length >= 2) {
+    return { title: '', block: fail('A numbered list is still open. Nothing was added.') };
+  }
+  const only = pending.options[0];
+  const value = (only?.value ?? {}) as { arr?: string; id?: number; title?: string; year?: number };
+  if (value.arr !== arr) return blank;
+  return {
+    id: Number(value.id),
+    title: String(value.title ?? ''),
+    ...(Number(value.year) > 0 ? { year: Number(value.year) } : {}),
+  };
+}
+
+function accepted(content: string, spoken: string): ToolResult {
+  return { ...ok(content), verbatimReply: spoken };
+}
+
+function notAdded(title: string, content: string): ToolResult {
+  return { ...fail(content), verbatimReply: `I could not add ${title}.` };
+}
+
+function refuseWrite(): ToolResult {
+  return { ...fail('Writes are disabled, so nothing was added.'), verbatimReply: 'Writes are disabled, so nothing was added.' };
+}
+
+async function alreadyInLibrary(
+  ctx: ToolContext,
+  fetchImpl: FetchImpl | undefined,
+  arr: 'movie' | 'series',
+  id: number,
+  title: string,
+  year: number | undefined,
+  seasons: number[],
+): Promise<string> {
+  const place = arr === 'movie' ? 'movie library' : 'show library';
+  const base = `${titled(title, year)} is already in the ${place}.`;
+  const client = plexCheckerFor(ctx.config.plex, fetchImpl);
+  if (!client) return `${base} I cannot check Plex from here.`;
+  const found = await client.inspect({ arr, id, seasons, now: new Date() });
+  if (found.state === 'unknown' || found.state === 'unconfigured') {
+    return `${base} I couldn't confirm whether it is on Plex.`;
+  }
+  return `${base} ${plexStatusLine(title, year, found, seasons)}`;
+}
+
+function alreadyRequested(title: string, year?: number): ToolResult {
+  const when = year ? ` (${year})` : '';
+  return {
+    ...ok('ALREADY_REQUESTED — a watch is already scheduled, so nothing was added again.'),
+    verbatimReply: `Your request for ${title}${when} is already in.`,
   };
 }

@@ -54,6 +54,11 @@ export interface ToolContext {
   userTurns?: string[];
   /** Verified delivery addresses, keyed by sender. Never model-supplied. */
   kindle?: KindleRegistry;
+  /**
+   * Send one JPEG to this person. Failures are reported as false and must not
+   * change whether a request was accepted. Optional: tests omit it.
+   */
+  sendImage?: (filename: string, bytes: Buffer) => Promise<boolean>;
 }
 
 /**
@@ -68,6 +73,11 @@ export interface ToolResult {
   ok: boolean;
   /** Rendered back to the model as the tool message content. */
   content: string;
+  /**
+   * When set, this exact text is what the person is sent, and the model does
+   * not get another turn to rephrase it.
+   */
+  verbatimReply?: string;
 }
 
 export interface Tool {
@@ -131,7 +141,7 @@ export interface Tool {
    * in order to avoid a partial one — over-gating, which is the same harm as
    * under-gating pointed the other way. They declare nothing, deliberately.
    */
-  needsServices?: ('sonarr' | 'radarr' | 'prowlarr' | 'jellyfin' | 'qbittorrent' | 'dispatcharr' | 'audiobookshelf')[];
+  needsServices?: ('sonarr' | 'radarr' | 'prowlarr' | 'jellyfin' | 'qbittorrent' | 'dispatcharr' | 'audiobookshelf' | 'plex')[];
   /**
    * Services of which AT LEAST ONE must exist — the any-of counterpart to
    * `needsServices`.

@@ -1,10 +1,21 @@
 import { resolveOfKind } from '../choices.js';
-import { deliverEbook } from '../media/ebook-deliver.js';
+import {
+  bookAlreadyRequested,
+  bookCouldNotAdd,
+  bookEmailed,
+  bookFailureLine,
+  bookNoEpub,
+  bookRequestAdded,
+  deliverEbook,
+} from '../media/ebook-deliver.js';
+import { isEpubClaim } from '../media/ebook-validate.js';
 import { grabTorrent, type MountMap } from '../media/grab.js';
 import { resolveMagnet, type FetchImpl } from '../media/prowlarr.js';
+import { SabnzbdClient } from '../media/sabnzbd.js';
 import type { IrcEbooks } from '../media/irc-ebooks.js';
 import type { MailSender } from '../media/kindle-send.js';
-import { fail, ok, type Tool, type ToolContext } from './types.js';
+import { mayRequestKindle, sameHandle } from '../permissions.js';
+import { fail, ok, type Tool, type ToolContext, type ToolResult } from './types.js';
 
 /**
  * Grab a book and send it to the person's Kindle.
@@ -46,6 +57,8 @@ export interface SendEbookDeps {
   onlySendTo?: string;
   /** Test seam for resolving a magnet from a Prowlarr download link. */
   fetchImpl?: FetchImpl;
+  /** Test seam for the SABnzbd API. Unset in production. */
+  sabFetch?: FetchImpl;
   /** The IRC source, when this deployment has one. */
   irc?: IrcEbooks;
 }
@@ -56,11 +69,10 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
   return {
     name: 'send_ebook',
     description:
-      'Grab the book the person CHOSE from the numbered list search_ebook returned and send it to ' +
-      'their Kindle. Pass the number they picked. Do not call this until they have actually said ' +
-      'which one — a book search returns different works, not different copies of one book. You do ' +
-      'not supply an address — theirs is already stored, and if it is not, ask them for it and save ' +
-      'it first.',
+      'Grab the book the person CHOSE from the numbered list search_ebook returned and email it to ' +
+      'the already configured Kindle address. Pass the number they picked. Do not call this until ' +
+      'they have actually said which one. You do not supply an address, and you do not ask a guest ' +
+      'for one. If this sender is not allowed, say so and stop.',
     minRole: 'guest',
     writes: true,
     consumesChoiceKind: 'ebook-release',
@@ -94,17 +106,22 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
       if (!ctx.choices) return fail('No option store is available.');
       if (!ctx.kindle) return fail('No address store is available.');
 
-      // ── who it goes to, decided before anything is done ──────────────────
-      const record = ctx.kindle.get(ctx.senderHandle);
-      if (!record) {
-        return fail(
-          'NO ADDRESS — nothing was grabbed. Ask them for their @kindle.com address and save it ' +
-            'first; do not guess one.',
-        );
-      }
-      if (deps.onlySendTo && ctx.senderHandle !== deps.onlySendTo) {
+      // ── who may ask, and where it goes, decided before anything is grabbed ─
+      if (deps.onlySendTo && !sameHandle(ctx.senderHandle, deps.onlySendTo)) {
         return fail(
           `RESTRICTED — this build only sends to ${deps.onlySendTo}. Nothing was grabbed or sent.`,
+        );
+      }
+      if (!mayRequestKindle(ctx.senderHandle, ctx.config)) {
+        return fail('REFUSED — ebook sending is not enabled for this sender. Nothing was grabbed or sent.');
+      }
+      const record = ctx.kindle.get(ctx.config.ownerHandle);
+      if (!record) {
+        return fail(
+          sameHandle(ctx.senderHandle, ctx.config.ownerHandle)
+            ? 'NO ADDRESS — nothing was grabbed. Ask them for their @kindle.com address and save it ' +
+              'first; do not guess one.'
+            : 'NO ADDRESS — the configured Kindle recipient is not set. Nothing was grabbed. Do not ask this person for an address.',
         );
       }
 
@@ -134,27 +151,13 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
        * option in the list is then genuinely the same book. Restore it there —
        * not before.
        */
-      if (isMobi(String(option.value['title'] ?? option.label))) {
-        /**
-         * ⚠️ ANY FORMAT AMAZON ACCEPTS, not `.epub` or nothing. `ebook-validate.ts`
-         * passes `epub`, `azw3` and `pdf`, so the alternatives OFFERED are all
-         * three — naming only EPUBs would hide a book that would have arrived
-         * perfectly well.
-         */
-        const usable = picked.choice.options.filter(
-          (o) => o.n !== option.n && /\.(epub|azw3|pdf)\b/i.test(String(o.value['title'] ?? o.label)),
-        );
-        return fail(
-          `REFUSED — option ${option.n} is a .mobi. Amazon stopped accepting that format in 2022 ` +
-            'and rejects it SILENTLY, so it would look sent and never arrive. Nothing was fetched ' +
-            'and NOTHING WAS SUBSTITUTED — the other options may be different books, so do not ' +
-            'quietly send one of them.' +
-            (usable.length
-              ? ` Tell them that one will not work and ask whether one of these is the same book: ` +
-                `${usable.map((o) => `${o.n}. ${o.label}`).join('; ')}.`
-              : ' Nothing else that was found is a format Amazon accepts either — say so and offer ' +
-                'to search again.'),
-        );
+      const pickedTitle = String(option.value['title'] ?? option.label);
+      if (!isEpubClaim(pickedTitle)) {
+        const reply = bookNoEpub(pickedTitle);
+        return {
+          ...fail(`REFUSED — ${reply} Nothing was fetched and NOTHING WAS SUBSTITUTED.`),
+          verbatimReply: reply,
+        };
       }
 
       const value = option.value;
@@ -171,6 +174,13 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
        * a falsy check somewhere below.
        */
       const source = value['source'] === 'irc' ? 'irc' : 'prowlarr';
+      if (source !== 'irc' && value['protocol'] === 'usenet') {
+        const downloadUrl = typeof value['downloadUrl'] === 'string' ? value['downloadUrl'] : '';
+        if (!downloadUrl) {
+          return fail('COULD NOT FETCH — that Usenet release has no NZB link. Nothing was submitted.');
+        }
+        return submitUsenet(ctx, deps, title, downloadUrl);
+      }
 
       /**
        * ⚠️ THE SECOND `.mobi` GUARD THAT USED TO SIT HERE IS GONE, NOT MOVED BY
@@ -257,8 +267,12 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
         { mayBlock: false },
       );
 
-      if (attempt.state === 'delivered') return ok(`SENT — ${attempt.detail}`);
-      if (attempt.state === 'failed') return fail(`FAILED — ${attempt.detail}`);
+      if (attempt.state === 'delivered') {
+        return { ...ok(`SENT — ${attempt.detail}`), verbatimReply: bookEmailed(title) };
+      }
+      if (attempt.state === 'failed') {
+        return { ...fail(`FAILED — ${attempt.detail}`), verbatimReply: bookFailureLine(title, attempt.detail) };
+      }
 
       /**
        * 🔴 NOT HERE YET — AND THIS IS WHERE THE OLD BUG LIVED.
@@ -295,15 +309,75 @@ export function makeSendEbook(deps: SendEbookDeps): Tool {
         });
       }
 
-      return ok(
-        `STARTED — ${attempt.detail} NOTHING HAS BEEN SENT YET. Tell them it is on the ` +
-          'way and that you will message them when it actually lands — do not say it has been sent.',
-      );
+      return {
+        ...ok(
+          `STARTED — ${attempt.detail} NOTHING HAS BEEN SENT YET. Tell them it is on the ` +
+            'way and that you will message them when it actually lands — do not say it has been sent.',
+        ),
+        verbatimReply: bookRequestAdded(title),
+      };
     },
   };
 }
 
-/** Amazon has rejected `.mobi` since 2022, and does it silently. */
-function isMobi(title: string): boolean {
-  return /\.mobi\b/i.test(title);
+/**
+ * Queue one NZB and record its job id. Mail happens later, from the follow-up,
+ * so this turn cannot also send the file.
+ */
+async function submitUsenet(
+  ctx: ToolContext,
+  deps: SendEbookDeps,
+  title: string,
+  downloadUrl: string,
+): Promise<ToolResult> {
+  const sab = ctx.config.sabnzbd;
+  if (!sab.baseUrl || !sab.apiKey) {
+    return fail('SABnzbd is not configured (SABNZBD_URL and SABNZBD_API_KEY). Nothing was submitted.');
+  }
+  if (!sab.storagePrefix || !sab.localDir) {
+    return fail(
+      'SABnzbd paths are not configured (SABNZBD_STORAGE_PREFIX and SABNZBD_LOCAL_DIR). Nothing was submitted.',
+    );
+  }
+  if (!ctx.followups) {
+    return fail(
+      'There is nowhere to record the SABnzbd job, so it was NOT submitted. Nothing was sent.',
+    );
+  }
+  const pending = ctx.followups.pendingEbook(ctx.senderHandle, title);
+  if (pending) {
+    return {
+      ...ok(
+        `STARTED — "${title}" is already being fetched. NOTHING HAS BEEN SENT YET. Do not start a second copy. ` +
+          'Tell them you will message them when the mail server has actually accepted the file — do not say it ' +
+          'has been sent, and do not say it is on their Kindle.',
+      ),
+      verbatimReply: bookAlreadyRequested(title),
+    };
+  }
+  const added = await new SabnzbdClient({
+    baseUrl: sab.baseUrl,
+    apiKey: sab.apiKey,
+    category: sab.category,
+    ...(deps.sabFetch ? { fetchImpl: deps.sabFetch } : {}),
+  }).addUrl(downloadUrl);
+  if (added.state !== 'accepted') {
+    return { ...fail(`FAILED — ${added.detail} Nothing was sent.`), verbatimReply: bookCouldNotAdd(title) };
+  }
+  ctx.followups.schedule({
+    kind: 'ebook-deliver',
+    senderHandle: ctx.senderHandle,
+    dueAt: new Date(),
+    reason: `started fetching "${title}" from Usenet for them`,
+    observed: `SABnzbd accepted the NZB as job ${added.nzoId}. Nothing has been mailed.`,
+    ebook: { source: 'sab', title, nzoId: added.nzoId },
+  });
+  return {
+    ...ok(
+      `STARTED — SABnzbd accepted "${title}" in category ${sab.category}. NOTHING HAS BEEN SENT YET. ` +
+        'The download has not finished. Tell them it is queued and that you will message them when the ' +
+        'mail server has actually accepted the file — do not say it has been sent, and do not say it is on their Kindle.',
+    ),
+    verbatimReply: bookRequestAdded(title),
+  };
 }

@@ -44,6 +44,7 @@ const NONE = {
   radarr: false,
   prowlarr: false,
   jellyfin: false,
+  plex: false,
   qbittorrent: false,
   dispatcharr: false,
   audiobookshelf: false,
